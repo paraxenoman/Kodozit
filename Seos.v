@@ -140,7 +140,7 @@ with norm_wf_type : type_context -> type -> type -> Prop :=
         norm_wf_type Γ T X ->
         X <> Ty_ReadyVar ->
         X <> (Ty_Var y) ->
-        norm_wf_type Γ (Ty_Prod [T]) (Ty_Prod [X])
+        norm_wf_type Γ (Ty_Prod [T]) X
 
     | nwft_prod : forall Γ P X P2 y, 
         P <> [] ->
