@@ -390,26 +390,26 @@ Definition eval (ctx : eval_context) (prg : prog) : option term :=
 
 
 (* Тривиальный пример хорошей программы *)
-Definition example_good_prog := [Tm_DeclVar "input" (Tm_Elem "bla"); Tm_DeclVar "myvar" (Tm_Prod [Tm_Elem "0"; Tm_Var "input"; Tm_Elem "2"; Tm_Elem "VAL"]); Tm_Var "myvar"].
+Example example_good_prog := [Tm_DeclVar "input" (Tm_Elem "bla"); Tm_DeclVar "myvar" (Tm_Prod [Tm_Elem "0"; Tm_Var "input"; Tm_Elem "2"; Tm_Elem "VAL"]); Tm_Var "myvar"].
 Compute (eval_prog [] example_good_prog).
 Compute (infer [] example_good_prog).
 
 (* Тривиальный пример плохой программы - undefined variable bad *)
-Definition example_bad_prog := (Tm_DeclVar "bed" (Tm_Elem "()") :: Tm_Var "bad" :: []).
+Example example_bad_prog := (Tm_DeclVar "bed" (Tm_Elem "()") :: Tm_Var "bad" :: []).
 Compute (eval_prog [] example_bad_prog).
 Compute (infer [] example_bad_prog).
 
 (* Ещё пример плохой программы - объявление переменных не на топлевеле *)
-Definition example_bad_prog2 := [Tm_Prod [Tm_Elem ""; Tm_DeclVar "bed" (Tm_Elem "()")]].
+Example example_bad_prog2 := [Tm_Prod [Tm_Elem ""; Tm_DeclVar "bed" (Tm_Elem "()")]].
 Compute (eval_prog [] example_bad_prog2).
 Compute (infer [] example_bad_prog2).
 
 (* Ещё пример плохой программы - затенение переменных *)
-Definition example_bad_prog3 := [Tm_DeclVar "input" (Tm_Elem "bla"); Tm_DeclVar "input" (Tm_Prod [Tm_Elem "0"; Tm_Elem "2"; Tm_Elem "VAL"]); Tm_Var "myvar"].
+Example example_bad_prog3 := [Tm_DeclVar "input" (Tm_Elem "bla"); Tm_DeclVar "input" (Tm_Prod [Tm_Elem "0"; Tm_Elem "2"; Tm_Elem "VAL"]); Tm_Var "myvar"].
 Compute (eval_prog [] example_bad_prog3).
 Compute (infer [] example_bad_prog3).
 
 (* Ещё пример плохой программы - прямое использование Ty_ReadyVar *)
-Definition example_bad_prog4 := [Tm_Subst Ty_ReadyVar].
+Example example_bad_prog4 := [Tm_Subst Ty_ReadyVar].
 Compute (eval_prog [] example_bad_prog4).
 Compute (infer [] example_bad_prog4).
