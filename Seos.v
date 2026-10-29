@@ -73,7 +73,11 @@ Inductive has_type : type_context -> term -> type -> Prop :=
       Γ ⊢ v ∈ T ->
       norm_wf_type Γ T X ->
       (BindVarType x X :: Γ) ⊢ (Tm_DeclVar x v) ∈ Ty_ReadyVar
-      
+
+  | ht_decl_var_upd : forall Γ x v X,
+      (BindVarType x X :: Γ) ⊢ (Tm_DeclVar x v) ∈ Ty_ReadyVar ->
+      (BindVarType x X :: Γ) ⊢ (Tm_Var x) ∈ X
+
   | ht_readyvar : forall Γ, Γ ⊢ Tm_ReadyVar ∈ Ty_ReadyVar
 
   | ht_elem : forall Γ u, 
@@ -97,13 +101,11 @@ Inductive has_type : type_context -> term -> type -> Prop :=
   | ht_subst : forall Γ T X,
       norm_wf_type Γ T X ->
       Γ ⊢ (Tm_Subst T) ∈ (Ty_Subst X)
-
-  | ht_prod : forall Γ p P x X,
+ 
+  | ht_prod : forall Γ p P x,
       p <> [] ->
       p <> [x] ->
-      Forall2 (fun v V => 
-        (norm_wf_type Γ V X /\ Γ ⊢ v ∈ X)
-      ) p P ->
+      Forall2 (has_type Γ) p P ->
       Γ ⊢ (Tm_Prod p) ∈ (Ty_Prod P)
 (* Отношение нормализации и well-formedness для типов *)
 with norm_wf_type : type_context -> type -> type -> Prop :=
