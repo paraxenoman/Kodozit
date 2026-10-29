@@ -58,21 +58,20 @@ Fixpoint var_type_lookup (Gamma : type_context) (x : VarName) : option type :=
   | _ :: rest => var_type_lookup rest x
   end.
 
-(* Отношение типизации (Gamma |- t : T) *) 
+(* Отношение типизации (Γ ⊢ t ∈ A) *) 
 
 Reserved Notation "Γ '⊢' t '∈' A" (at level 40, t at level 99, A at level 60).
 
 Inductive has_type : type_context -> term -> type -> Prop :=
-  | ht_var : forall Γ x T,
+  | ht_var : forall Γ x T X,
       var_type_lookup Γ x = Some T ->
-      type_wf Γ T ->
-      Γ ⊢ (Tm_Var x) ∈ T
-      
-  | ht_decl_var : forall Γ x v T,
+      norm_wf_type Γ T X ->
+      Γ ⊢ (Tm_Var x) ∈ X
+
+  | ht_decl_var : forall Γ x v T X,
       var_type_lookup Γ x = None ->
       Γ ⊢ v ∈ T ->
-      T <> Ty_ReadyVar ->
-      type_wf Γ T ->
+      norm_wf_type Γ T X ->
       Γ ⊢ (Tm_DeclVar x v) ∈ Ty_ReadyVar
 
   | ht_elem : forall Γ u, 
@@ -82,68 +81,71 @@ Inductive has_type : type_context -> term -> type -> Prop :=
 
   | ht_unit : forall Γ,
       Γ ⊢ Tm_Unit ∈ Ty_Unit
-  
-  | ht_prod_mono : forall Γ x T,
-      type_wf Γ T ->
-      Γ ⊢ x ∈ T ->
-      T <> Ty_ReadyVar ->
-      Γ ⊢ (Tm_Prod [x]) ∈ T
-  
-  | ht_sing : forall Γ s S,
-      type_wf Γ S ->
-      Γ ⊢ s ∈ S ->
-      S <> Ty_ReadyVar ->
+
+  | ht_prod_mono : forall Γ x T X,
+      norm_wf_type Γ T X ->
+      Γ ⊢ x ∈ X ->
+      Γ ⊢ (Tm_Prod [x]) ∈ X
+
+  | ht_sing : forall Γ s S X,
+      norm_wf_type Γ S X ->
+      Γ ⊢ s ∈ X ->
       Γ ⊢ (Tm_Sing s) ∈ (Ty_Sing s)
 
-  | ht_subst : forall Γ T,
-      type_wf Γ T ->
-      T <> Ty_ReadyVar ->
-      Γ ⊢ (Tm_Subst T) ∈ (Ty_Subst T)
+  | ht_subst : forall Γ T X,
+      norm_wf_type Γ T X ->
+      Γ ⊢ (Tm_Subst T) ∈ (Ty_Subst X)
 
-  | ht_prod : forall Γ p P x,
+  | ht_prod : forall Γ p P x X,
       p <> [] ->
       p <> [x] ->
       Forall2 (fun v V => 
-        (type_wf Γ V /\ V <> Ty_ReadyVar /\ Γ ⊢ v ∈ V)
+        (norm_wf_type Γ V X /\ Γ ⊢ v ∈ X)
       ) p P ->
       Γ ⊢ (Tm_Prod p) ∈ (Ty_Prod P)
-(* Отношение well-formedness для типов *)
-with type_wf : type_context -> type -> Prop :=
-  | wf_var : forall Γ X T,
-      type_name_lookup Γ X = Some T ->
-      type_wf Γ T ->
-      T <> Ty_ReadyVar ->
-      type_wf Γ (Ty_Var X)
-  | wf_readyvar : forall Γ, type_wf Γ Ty_ReadyVar
-  | wf_unit : forall Γ, type_wf Γ Ty_Unit
-
-  | wf_elem : forall Γ u, 
-      type_wf Γ (Ty_Elem u)
-
-  | wf_prim : forall Γ p, 
-      type_wf Γ (Ty_Prim p)
-
-  | wf_sing : forall Γ s S, 
-      has_type Γ s S ->
-      S <> Ty_ReadyVar ->
-      type_wf Γ (Ty_Sing s)
-
-  | wf_subst : forall Γ T, 
-      type_wf Γ T ->
-      T <> Ty_ReadyVar ->
-      type_wf Γ (Ty_Subst T)
-
-  | wf_prod_mono : forall Γ X,
-      type_wf Γ X ->
+(* Отношение нормализации и well-formedness для типов *)
+with norm_wf_type : type_context -> type -> type -> Prop :=
+    
+    | nwft_var : forall Γ t T X y,
+      type_name_lookup Γ t = Some T ->
+      norm_wf_type Γ T X ->
       X <> Ty_ReadyVar ->
-      type_wf Γ (Ty_Prod [X])
+      X <> (Ty_Var y) ->
+      norm_wf_type Γ (Ty_Var t) X
+      
+    | nwft_readyvar : forall Γ, norm_wf_type Γ Ty_ReadyVar Ty_ReadyVar
+    
+    | nwft_unit : forall Γ, norm_wf_type Γ Ty_Unit Ty_Unit
+    
+    | nwft_elem : forall Γ e, norm_wf_type Γ (Ty_Elem e) (Ty_Elem e)
+    
+    | nwft_prim : forall Γ p, norm_wf_type Γ (Ty_Prim p) (Ty_Prim p)
+    
+    | nwft_sing : forall Γ s S X y, 
+        Γ ⊢ s ∈ S ->
+        norm_wf_type Γ S X ->
+        X <> Ty_ReadyVar ->
+        X <> (Ty_Var y) ->
+        norm_wf_type Γ (Ty_Sing s) (Ty_Sing s)
+    
+    | nwft_subst : forall Γ T X y,
+        norm_wf_type Γ T X ->
+        X <> Ty_ReadyVar ->
+        X <> (Ty_Var y) ->
+        norm_wf_type Γ (Ty_Subst T) (Ty_Subst X)
+    
+    | nwft_prod_mono : forall Γ T X y,
+        norm_wf_type Γ T X ->
+        X <> Ty_ReadyVar ->
+        X <> (Ty_Var y) ->
+        norm_wf_type Γ (Ty_Prod [T]) (Ty_Prod [X])
 
-  | wf_prod : forall Γ P X, 
-      P <> [] ->
-      P <> [X] ->
-      Forall (fun t => type_wf Γ t /\ t <> Ty_ReadyVar) P ->
-      type_wf Γ (Ty_Prod P)
-
+    | nwft_prod : forall Γ P X P2 y, 
+        P <> [] ->
+        P <> [X] ->
+        Forall2 (fun t t2 => 
+                    norm_wf_type Γ t t2 /\ t2 <> Ty_ReadyVar /\ t2 <> (Ty_Var y)) P P2 ->
+        norm_wf_type Γ (Ty_Prod P) (Ty_Prod P2)
 where "Γ '⊢' t '∈' A" := (has_type Γ t A).
 
 Inductive InferTypeResult : Type :=
