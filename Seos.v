@@ -72,7 +72,9 @@ Inductive has_type : type_context -> term -> type -> Prop :=
       var_type_lookup Γ x = None ->
       Γ ⊢ v ∈ T ->
       norm_wf_type Γ T X ->
-      Γ ⊢ (Tm_DeclVar x v) ∈ Ty_ReadyVar
+      (BindVarType x X :: Γ) ⊢ (Tm_DeclVar x v) ∈ Ty_ReadyVar
+      
+  | ht_readyvar : forall Γ, Γ ⊢ Tm_ReadyVar ∈ Ty_ReadyVar
 
   | ht_elem : forall Γ u, 
         Γ ⊢ (Tm_Elem u) ∈ (Ty_Elem u)
