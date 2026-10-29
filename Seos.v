@@ -359,27 +359,45 @@ Fixpoint eval_term (Sigma : eval_context) (tm : term) : EvalResult :=
 Definition prog : Type := list term.
 
 (* Основная функция проверки типа программы *)
-Fixpoint infer_type_prog (Γ : type_context) (prg : prog) : InferTypeResult :=
-  match prg with
-  | [] => TypeCtx Ty_Unit Γ
-  | [t] => infer_type_term Γ t
+Fixpoint infer_type_prog (Γ : type_context) (prg : prog) : option type :=
+  let fix f g p {struct p} := match p with
+  | [] => TypeCtx Ty_Unit g
+  | [t] => infer_type_term g t
   | t :: rest =>
-      match infer_type_term Γ t with
-      | TypeCtx _ Γ2 => infer_type_prog Γ2 rest
+      match infer_type_term g t with
+      | TypeCtx _ Γ2 =>
+           match infer_type_prog Γ2 rest with
+           | Some tp => TypeCtx tp Γ2
+           | None => FailType
+           end
       | FailType => notype
       end
+  end
+  in
+  match f Γ prg with
+  | TypeCtx t _ => Some t
+  | _ => None
   end.
 
 (* Основная функция вычисления программы *)
-Fixpoint eval_prog (Sigma : eval_context) (prg : prog) : EvalResult :=
-  match prg with
-  | [] => ValCtx Tm_Unit Sigma
-  | [t] => eval_term Sigma t
+Fixpoint eval_prog (Sigma : eval_context) (prg : prog) : option term :=
+  let fix f s p := match prg with
+  | [] => ValCtx Tm_Unit s
+  | [t] => eval_term s t
   | t :: rest =>
-      match eval_term Sigma t with
-      | ValCtx _ Sigma1 => eval_prog Sigma1 rest
+      match eval_term s t with
+      | ValCtx _ s1 => 
+          match eval_prog s1 rest with
+          | Some tm => ValCtx tm s1
+          | None => FailValue
+          end
       | FailValue => novalue
       end
+  end
+  in
+  match f Sigma prg with
+  | ValCtx t _ => Some t
+  | _ => None
   end.
 
 
@@ -404,6 +422,7 @@ Compute (eval_prog [] example_bad_prog3).
 Compute (infer_type_prog [] example_bad_prog3).
 
 (* Ещё пример плохой программы - прямое использование Ty_ReadyVar *)
-Example example_bad_prog4 := [Tm_Subst Ty_ReadyVar].
+Example example_bad_prog4 : prog := [Tm_Subst Ty_ReadyVar].
 Compute (eval_prog [] example_bad_prog4).
 Compute (infer_type_prog [] example_bad_prog4).
+
