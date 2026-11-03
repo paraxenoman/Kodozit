@@ -10,7 +10,9 @@ Definition TypeName : Type := string.
 Definition VarName : Type := string.
 Definition elem : Type := string.
 
-Inductive prim : Type := (* TODO *).
+Inductive prim : Type :=
+  | Prm_Left : prim
+  | Prm_Right : prim.
 
 (* Синтаксис типов  *)
 Inductive type : Type :=
@@ -73,129 +75,7 @@ Fixpoint var_type_lookup (Γ : type_context) (x : VarName) : InferTypeResult :=
         var_type_lookup rest x
   | _ :: rest => var_type_lookup rest x
   end.
-
-(* Функция нормализации для типов *)
-Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : InferTypeResult :=
-    match T with
-    | Ty_Var tn => type_name_lookup Γ tn
-    | Ty_Sing tm =>
-      match infer_type_term Γ tm with
-      | FailType => notype
-      | TypeCtx tytm _ => sometype (Ty_Sing tm) Γ
-      end
-    | Ty_Subst ty => norm_type Γ ty
-    | Ty_Prod [x] => norm_type Γ x
-    | Ty_Prod (p1 :: ps) =>
-       let fix norm_list (ts : list type) : option (list type) :=
-          match ts with
-          | [] => Some []
-          | t :: rest =>
-            match norm_type Γ t with
-            | TypeCtx nrmpt _ =>
-                match nrmpt with
-                | Ty_Cmd => None
-                | _ => 
-                    match norm_list rest with
-                    | Some nrmpts => Some (nrmpt :: nrmpts)
-                    | None => None
-                    end
-                end
-            | FailType => None
-            end
-          end
-        in
-          match norm_list (p1 :: ps) with 
-          | Some P => sometype (Ty_Prod P) Γ 
-          | None => FailType 
-          end
-    | _ => sometype T Γ
-    end
-(* Функция вывода и проверки типов *)
-with infer_type_term (Γ : type_context) (tm : term)  : InferTypeResult :=
-  match tm with
-  | Tm_Var x => var_type_lookup Γ x
-  | Tm_DeclVar x tm =>
-      match var_type_lookup Γ x with
-      | TypeCtx _ _ => notype
-      | FailType =>
-          match infer_type_term Γ tm with
-          | FailType => notype
-          | TypeCtx T Γ2 => 
-              match T with
-              | Ty_Cmd => notype
-              | _ => sometype Ty_Cmd (BindVarType x T :: Γ2)
-              end
-          end
-      end
-  | Tm_DeclType x T =>
-      match type_name_lookup Γ x with
-      | TypeCtx _ _ => notype
-      | FailType => 
-        match norm_type Γ T with
-        | TypeCtx TN _ => sometype Ty_Cmd (BindTypeName x TN :: Γ)
-        | FailType => notype
-        end
-      end
-  | Tm_Cmd => sometype Ty_Cmd Γ
-  | Tm_Elem u => sometype (Ty_Elem u) Γ
-  | Tm_Prim p => sometype (Ty_Prim p) Γ
-  | Tm_Sing s =>
-    match s with
-    | Tm_Var _ => notype
-    | _ =>
-      match infer_type_term Γ s with
-      | TypeCtx T _ => 
-          match T with
-          | Ty_Cmd => notype
-          | _ => sometype (Ty_Sing s) Γ
-          end
-      | FailType => notype
-      end
-    end
-  | Tm_Subst T => 
-      match T with
-      | Ty_Cmd => notype
-      | _ => 
-        match norm_type Γ T with 
-        | TypeCtx NT _ => sometype (Ty_Subst NT) Γ
-        | FailType => notype
-        end
-      end
-  | Tm_Prod [] => sometype Ty_Unit Γ
-  | Tm_Prod [x] => 
-      match infer_type_term Γ x with
-      | TypeCtx T _ => 
-          match T with
-          | Ty_Cmd => notype
-          | _ => sometype T Γ
-          end
-      | FailType => notype
-      end
-  | Tm_Prod (p1 :: ps) =>
-      let fix infer_list (ts : list term) : option (list type) :=
-        match ts with
-        | [] => Some []
-        | t :: rest =>
-            match infer_type_term Γ t with
-            | TypeCtx T _ =>
-                match T with
-                | Ty_Cmd => None
-                | _ => 
-                    match infer_list rest with
-                    | Some Ts => Some (T :: Ts)
-                    | None => None
-                    end
-                end
-            | FailType => None
-            end
-        end
-      in
-      match infer_list (p1 :: ps) with
-      | Some P => sometype (Ty_Prod P) Γ 
-      | None => FailType 
-      end
-  end.
-
+  
 Inductive VarValueBinding : Type :=
   | BindVarValue : VarName -> term -> VarValueBinding.
 
@@ -285,6 +165,201 @@ Fixpoint eval_term (Sigma : eval_context) (tm : term) : EvalResult :=
       end
   end.
 
+Fixpoint list_eqb {A} (feq : A -> A -> bool)
+                  (l1 l2 : list A) : bool :=
+  match l1, l2 with
+  | [], [] => true
+  | x1 :: t1, x2 :: t2 =>
+      feq x1 x2 && list_eqb feq t1 t2
+  | _, _ => false
+  end.
+  
+Fixpoint term_list_eqb {A} (feq : (A * A) -> bool)
+                  (l1 l2 : list A) : bool :=
+  match l1, l2 with
+  | [], [] => true
+  | x1 :: t1, x2 :: t2 =>
+      feq (x1, x2) && term_list_eqb feq t1 t2
+  | _, _ => false
+  end.
+  
+Fixpoint type_list_eqb {A} (feq : (A * A) -> bool)
+                  (l1 l2 : list A) : bool :=
+  match l1, l2 with
+  | [], [] => true
+  | x1 :: t1, x2 :: t2 =>
+      feq (x1, x2) && type_list_eqb feq t1 t2
+  | _, _ => false
+  end.
+
+Definition prim_beq (p1 p2 : prim) : bool :=
+  match p1, p2 with
+  | Prm_Left, Prm_Left => true
+  | Prm_Right, Prm_Right => true
+  | _, _ => false
+  end.
+
+(* Функция нормализации для типов *)
+Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : InferTypeResult :=
+    match T with
+    | Ty_Var tn => type_name_lookup Γ tn
+    | Ty_Sing tm =>
+      match infer_type_term Γ tm with
+      | FailType => notype
+      | TypeCtx tytm _ => sometype (Ty_Sing tm) Γ
+      end
+    | Ty_Subst ty => norm_type Γ ty
+    | Ty_Prod [x] => norm_type Γ x
+    | Ty_Prod (p1 :: ps) =>
+       let fix norm_list (ts : list type) : option (list type) :=
+          match ts with
+          | [] => Some []
+          | t :: rest =>
+            match norm_type Γ t with
+            | TypeCtx nrmpt _ =>
+                match nrmpt with
+                | Ty_Cmd => None
+                | _ => 
+                    match norm_list rest with
+                    | Some nrmpts => Some (nrmpt :: nrmpts)
+                    | None => None
+                    end
+                end
+            | FailType => None
+            end
+          end
+        in
+          match norm_list (p1 :: ps) with 
+          | Some P => sometype (Ty_Prod P) Γ 
+          | None => FailType 
+          end
+    | _ => sometype T Γ
+    end
+(* Функция вывода и проверки типов *)
+with infer_type_term (Γ : type_context) (tm : term) : InferTypeResult :=
+  match tm with
+  | Tm_Var x => var_type_lookup Γ x
+  | Tm_DeclVar x tm =>
+      match var_type_lookup Γ x with
+      | TypeCtx _ _ => notype
+      | FailType =>
+          match infer_type_term Γ tm with
+          | FailType => notype
+          | TypeCtx T Γ2 => 
+              match T with
+              | Ty_Cmd => notype
+              | _ => sometype Ty_Cmd (BindVarType x T :: Γ2)
+              end
+          end
+      end
+  | Tm_DeclType x T =>
+      match type_name_lookup Γ x with
+      | TypeCtx _ _ => notype
+      | FailType => 
+        match norm_type Γ T with
+        | TypeCtx TN _ => sometype Ty_Cmd (BindTypeName x TN :: Γ)
+        | FailType => notype
+        end
+      end
+  | Tm_Cmd => sometype Ty_Cmd Γ
+  | Tm_Elem u => sometype (Ty_Elem u) Γ
+  | Tm_Prim p => sometype (Ty_Prim p) Γ
+  | Tm_Sing s =>
+    match s with
+    | Tm_Var _ => notype
+    | _ =>
+      match infer_type_term Γ s with
+      | TypeCtx T _ => 
+          match T with
+          | Ty_Cmd => notype
+          | _ => sometype (Ty_Sing s) Γ
+          end
+      | FailType => notype
+      end
+    end
+  | Tm_Subst T => 
+      match T with
+      | Ty_Cmd => notype
+      | _ => 
+        match norm_type Γ T with 
+        | TypeCtx NT _ => sometype (Ty_Subst NT) Γ
+        | FailType => notype
+        end
+      end
+  | Tm_Prod [] => sometype Ty_Unit Γ
+  | Tm_Prod [x] => 
+      match infer_type_term Γ x with
+      | TypeCtx T _ => 
+          match T with
+          | Ty_Cmd => notype
+          | _ => sometype T Γ
+          end
+      | FailType => notype
+      end
+  | Tm_Prod (p1 :: ps) =>
+      let fix infer_list (ts : list term) : option (list type) :=
+        match ts with
+        | [] => Some []
+        | t :: rest =>
+            match infer_type_term Γ t with
+            | TypeCtx T _ =>
+                match T with
+                | Ty_Cmd => None
+                | _ => 
+                    match infer_list rest with
+                    | Some Ts => Some (T :: Ts)
+                    | None => None
+                    end
+                end
+            | FailType => None
+            end
+        end
+      in
+      match infer_list (p1 :: ps) with
+      | Some P => sometype (Ty_Prod P) Γ 
+      | None => FailType 
+      end
+  end.
+
+(* Функция булевого равенства для термов *) 
+Fixpoint term_beq (ctx : eval_context) (T1 T2 : term) : bool :=
+  match T1, T2 with
+    |Tm_Var tv1, Tm_Var tv2 => eqb tv1 tv2
+    (*| Tm_Var tv1, Tm_Var tv2 =>
+    if (eqb tv1 tv2) then true
+    else 
+      match eval_term ctx (Tm_Var tv1), eval_term ctx (Tm_Var tv2) with
+      | ValCtx tn1 _, ValCtx tn2 _ => term_beq ctx tn1 tn2
+      | _, _ => false
+      end*)
+  | Tm_Cmd, Tm_Cmd => true
+  | Tm_Elem e1, Tm_Elem e2 => eqb e1 e2
+  | Tm_Prim p1, Tm_Prim p2 => prim_beq p1 p2
+  | Tm_Sing tm1, Tm_Sing tm2 => term_beq ctx tm1 tm2
+  | Tm_Subst tp1, Tm_Subst tp2 => type_beq [] tp1 tp2
+  | Tm_Prod l1, Tm_Prod l2 => list_eqb (term_beq ctx) l1 l2
+  | _, _ => false
+  end
+(* Функция булевого равенства для типов *)
+with type_beq (ctx : type_context) (T1 T2 : type) : bool := 
+  match T1, T2 with
+  | Ty_Var tv1, Ty_Var tv2 => eqb tv1 tv2
+  (*| Ty_Var tv1, Ty_Var tv2 =>
+      if (eqb tv1 tv2) then true
+      else 
+        match norm_type ctx (Ty_Var tv1), norm_type ctx (Ty_Var tv2) with
+        | TypeCtx tn1 _, TypeCtx tn2 _ => type_beq ctx tn1 tn2
+        | _, _ => false
+        end *)
+  | Ty_Cmd, Ty_Cmd => true
+  | Ty_Elem e1, Ty_Elem e2 => eqb e1 e2
+  | Ty_Prim p1, Ty_Prim p2 => prim_beq p1 p2
+  | Ty_Sing tm1, Ty_Sing tm2 => term_beq [] tm1 tm2
+  | Ty_Subst it1,Ty_Subst it2 => type_beq ctx it1 it2
+  | Ty_Prod l1, Ty_Prod l2 => list_eqb (type_beq ctx) l1 l2
+  | _, _ => false
+  end.
+
 Definition prog : Type := list term.
 
 (* Основная функция проверки типа программы *)
@@ -327,7 +402,7 @@ Fixpoint eval_prog (Sigma : eval_context) (prg : prog) : option term :=
   match f Sigma prg with
   | ValCtx t _ => Some t
   | _ => None
-  end.
+  end. 
 
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog := [
