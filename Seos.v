@@ -173,24 +173,6 @@ Fixpoint list_eqb {A} (feq : A -> A -> bool)
       feq x1 x2 && list_eqb feq t1 t2
   | _, _ => false
   end.
-  
-Fixpoint term_list_eqb {A} (feq : (A * A) -> bool)
-                  (l1 l2 : list A) : bool :=
-  match l1, l2 with
-  | [], [] => true
-  | x1 :: t1, x2 :: t2 =>
-      feq (x1, x2) && term_list_eqb feq t1 t2
-  | _, _ => false
-  end.
-  
-Fixpoint type_list_eqb {A} (feq : (A * A) -> bool)
-                  (l1 l2 : list A) : bool :=
-  match l1, l2 with
-  | [], [] => true
-  | x1 :: t1, x2 :: t2 =>
-      feq (x1, x2) && type_list_eqb feq t1 t2
-  | _, _ => false
-  end.
 
 Definition prim_beq (p1 p2 : prim) : bool :=
   match p1, p2 with
@@ -321,56 +303,199 @@ with infer_type_term (Γ : type_context) (tm : term) : InferTypeResult :=
       end
   end.
 
-(* Функция булевого равенства для термов *) 
-Fixpoint term_beq (ctx : eval_context) (T1 T2 : term) : bool :=
-  match T1, T2 with
-    |Tm_Var tv1, Tm_Var tv2 => eqb tv1 tv2
-    (*| Tm_Var tv1, Tm_Var tv2 =>
-    if (eqb tv1 tv2) then true
-    else 
-      match eval_term ctx (Tm_Var tv1), eval_term ctx (Tm_Var tv2) with
-      | ValCtx tn1 _, ValCtx tn2 _ => term_beq ctx tn1 tn2
+(* Функция булевого равенства для термов *)
+Definition term_beq (ctx : eval_context) (it1 it2 : term) : bool :=
+  match eval_term ctx it1, eval_term ctx it2 with
+  | ValCtx T1 _, ValCtx T2 _ =>
+    let fix norm_term_beq (nt1 nt2 : term) : bool :=
+      match nt1, nt2 with
+      | Tm_Cmd, Tm_Cmd => true
+      | Tm_Elem e1, Tm_Elem e2 => eqb e1 e2
+      | Tm_Prim p1, Tm_Prim p2 => prim_beq p1 p2
+      | Tm_Sing tm1, Tm_Sing tm2 => norm_term_beq tm1 tm2
+      (* TODO | Tm_Subst tp1, Tm_Subst tp2 => type_beq [] tp1 tp2*)
+      | Tm_Prod l1, Tm_Prod l2 => list_eqb norm_term_beq l1 l2
       | _, _ => false
-      end*)
-  | Tm_Cmd, Tm_Cmd => true
-  | Tm_Elem e1, Tm_Elem e2 => eqb e1 e2
-  | Tm_Prim p1, Tm_Prim p2 => prim_beq p1 p2
-  | Tm_Sing tm1, Tm_Sing tm2 => term_beq ctx tm1 tm2
-  | Tm_Subst tp1, Tm_Subst tp2 => type_beq [] tp1 tp2
-  | Tm_Prod l1, Tm_Prod l2 => list_eqb (term_beq ctx) l1 l2
+      end
+    in
+      norm_term_beq T1 T2
   | _, _ => false
-  end
+  end.
+
 (* Функция булевого равенства для типов *)
-with type_beq (ctx : type_context) (T1 T2 : type) : bool := 
-  match T1, T2 with
-  | Ty_Var tv1, Ty_Var tv2 => eqb tv1 tv2
-  (*| Ty_Var tv1, Ty_Var tv2 =>
-      if (eqb tv1 tv2) then true
-      else 
-        match norm_type ctx (Ty_Var tv1), norm_type ctx (Ty_Var tv2) with
-        | TypeCtx tn1 _, TypeCtx tn2 _ => type_beq ctx tn1 tn2
-        | _, _ => false
-        end *)
-  | Ty_Cmd, Ty_Cmd => true
-  | Ty_Elem e1, Ty_Elem e2 => eqb e1 e2
-  | Ty_Prim p1, Ty_Prim p2 => prim_beq p1 p2
-  | Ty_Sing tm1, Ty_Sing tm2 => term_beq [] tm1 tm2
-  | Ty_Subst it1,Ty_Subst it2 => type_beq ctx it1 it2
-  | Ty_Prod l1, Ty_Prod l2 => list_eqb (type_beq ctx) l1 l2
+Definition type_beq (ctx : type_context) (it1 it2 : type) : bool := 
+  match norm_type ctx it1, norm_type ctx it2 with
+  | TypeCtx T1 _, TypeCtx T2 _ => 
+    let fix norm_type_beq (nt1 nt2 : type) : bool :=
+      match nt1, nt2 with
+      | Ty_Cmd, Ty_Cmd => true
+      | Ty_Elem e1, Ty_Elem e2 => eqb e1 e2
+      | Ty_Prim p1, Ty_Prim p2 => prim_beq p1 p2
+      | Ty_Sing tm1, Ty_Sing tm2 => term_beq [] tm1 tm2
+      | Ty_Subst tp1, Ty_Subst tp2 => norm_type_beq tp1 tp2
+      | Ty_Prod l1, Ty_Prod l2 => list_eqb norm_type_beq l1 l2
+      | _, _ => false
+      end
+    in
+      norm_type_beq T1 T2
   | _, _ => false
   end.
 
 Definition prog : Type := list term.
 
-(* Основная функция проверки типа программы *)
-Fixpoint infer_type_prog (Γ : type_context) (prg : prog) : option type :=
+(*
+  Окружение уже раскрытых определений типов.
+  В отличие от type_context, здесь хранятся именно определения имён типов.
+*)
+Definition type_def_context : Type :=
+  list (TypeName * type).
+
+(*
+  Окружение уже раскрытых определений термов.
+*)
+Definition term_def_context : Type :=
+  list (VarName * term).
+
+
+Fixpoint lookup_type_def
+    (Delta : type_def_context)
+    (X : TypeName)
+  : option type :=
+  match Delta with
+  | [] => None
+  | (Y, T) :: rest =>
+      if eqb X Y
+      then Some T
+      else lookup_type_def rest X
+  end.
+
+
+Fixpoint lookup_term_def
+    (Sigma : term_def_context)
+    (x : VarName)
+  : option term :=
+  match Sigma with
+  | [] => None
+  | (y, tm) :: rest =>
+      if eqb x y
+      then Some tm
+      else lookup_term_def rest x
+  end.
+
+Fixpoint unfold_type
+    (Sigma : term_def_context)
+    (Delta : type_def_context)
+    (T : type) {struct T}
+  : type :=
+  match T with
+  | Ty_Var X =>
+      match lookup_type_def Delta X with
+      | Some T' => T'
+      | None => Ty_Var X
+      end
+
+  | Ty_Cmd => Ty_Cmd
+  | Ty_Elem e => Ty_Elem e
+  | Ty_Prim p => Ty_Prim p
+
+  | Ty_Sing tm =>
+      Ty_Sing (unfold_term Sigma Delta tm)
+
+  | Ty_Subst T1 =>
+      Ty_Subst (unfold_type Sigma Delta T1)
+
+  | Ty_Prod Ts =>
+      let fix go (xs : list type) : list type :=
+          match xs with
+          | [] => []
+          | x :: rest =>
+              unfold_type Sigma Delta x :: go rest
+          end
+      in Ty_Prod (go Ts)
+  end
+
+with unfold_term
+    (Sigma : term_def_context)
+    (Delta : type_def_context)
+    (tm : term) {struct tm}
+  : term :=
+  match tm with
+  | Tm_Var x =>
+      match lookup_term_def Sigma x with
+      | Some tm' => tm'
+      | None => Tm_Var x
+      end
+
+  | Tm_DeclVar x rhs =>
+      Tm_DeclVar x (unfold_term Sigma Delta rhs)
+
+  | Tm_DeclType X T =>
+      Tm_DeclType X (unfold_type Sigma Delta T)
+
+  | Tm_Cmd => Tm_Cmd
+  | Tm_Elem e => Tm_Elem e
+  | Tm_Prim p => Tm_Prim p
+
+  | Tm_Sing s =>
+      Tm_Sing (unfold_term Sigma Delta s)
+
+  | Tm_Subst T =>
+      Tm_Subst (unfold_type Sigma Delta T)
+
+  | Tm_Prod ts =>
+      let fix go (xs : list term) : list term :=
+          match xs with
+          | [] => []
+          | x :: rest =>
+              unfold_term Sigma Delta x :: go rest
+          end
+      in Tm_Prod (go ts)
+  end.
+
+
+Fixpoint unfold_prog_aux
+    (Sigma : term_def_context)
+    (Delta : type_def_context)
+    (prg : prog) {struct prg}
+  : prog :=
+  match prg with
+  | [] =>
+      []
+
+  | Tm_DeclVar x rhs :: rest =>
+      let rhs' := unfold_term Sigma Delta rhs in
+      Tm_DeclVar x rhs'
+        :: unfold_prog_aux
+             ((x, rhs') :: Sigma)
+             Delta
+             rest
+
+  | Tm_DeclType X T :: rest =>
+      let T' := unfold_type Sigma Delta T in
+      Tm_DeclType X T'
+        :: unfold_prog_aux
+             Sigma
+             ((X, T') :: Delta)
+             rest
+
+  | tm :: rest =>
+      unfold_term Sigma Delta tm
+        :: unfold_prog_aux Sigma Delta rest
+  end.
+
+
+Definition unfold_prog (prg : prog) : prog :=
+  unfold_prog_aux [] [] prg.
+
+(* Вспомогательная функция проверки типа программы *)
+Fixpoint infer_type_prog_aux (Γ : type_context) (prg : prog) : option type :=
   let fix f g p {struct p} := match p with
   | [] => TypeCtx Ty_Unit g
   | [t] => infer_type_term g t
   | t :: rest =>
       match infer_type_term g t with
       | TypeCtx _ Γ2 =>
-           match infer_type_prog Γ2 rest with
+           match infer_type_prog_aux Γ2 rest with
            | Some tp => TypeCtx tp Γ2
            | None => FailType
            end
@@ -383,15 +508,15 @@ Fixpoint infer_type_prog (Γ : type_context) (prg : prog) : option type :=
   | _ => None
   end.
 
-(* Основная функция вычисления программы *)
-Fixpoint eval_prog (Sigma : eval_context) (prg : prog) : option term :=
-  let fix f s p := match prg with
+(* Вспомогательная функция вычисления программы *)
+Fixpoint eval_prog_aux (Sigma : eval_context) (prg : prog) : option term :=
+  let fix f s p {struct p} := match p with
   | [] => ValCtx Tm_Unit s
   | [t] => eval_term s t
   | t :: rest =>
       match eval_term s t with
       | ValCtx _ s1 => 
-          match eval_prog s1 rest with
+          match eval_prog_aux s1 rest with
           | Some tm => ValCtx tm s1
           | None => FailValue
           end
@@ -402,42 +527,50 @@ Fixpoint eval_prog (Sigma : eval_context) (prg : prog) : option term :=
   match f Sigma prg with
   | ValCtx t _ => Some t
   | _ => None
-  end. 
+  end.
+
+(* Основная функция проверки типа программы *)
+Definition infer_type_prog (Γ : type_context) (prg : prog) : option type :=
+  infer_type_prog_aux Γ (unfold_prog prg).
+
+(* Основная функция вычисления программы *)
+Definition eval_prog (Sigma : eval_context) (prg : prog) : option term :=
+  eval_prog_aux Sigma (unfold_prog prg).
 
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog := [
   Tm_DeclVar "sing" (Tm_Sing (Tm_Prod [Tm_Elem "bla"])); 
   Tm_DeclVar "myvar" (Tm_Prod [Tm_Elem "0"; Tm_Var "sing"; Tm_Elem "2"; Tm_Elem "VAL"]);
   Tm_Var "myvar"].
-Compute (eval_prog [] example_good_prog).
 Compute (infer_type_prog [] example_good_prog).
+Compute (eval_prog [] example_good_prog).
+
+(* Хорошая программа - использование переменной в Tm_Sing *)
+Example example_good_prog2 := [
+  Tm_DeclVar "input" (Tm_Elem "bla"); 
+  Tm_DeclVar "myvar" (Tm_Prod [Tm_Elem "0"; Tm_Sing (Tm_Var "input"); Tm_Elem "2"; Tm_Elem "VAL"]);
+  Tm_Var "myvar"].
+Compute (infer_type_prog [] example_good_prog2).
+Compute (eval_prog [] example_good_prog2).
 
 (* Плохая программа - undefined variable bad *)
 Example example_bad_prog := (Tm_DeclVar "bed" (Tm_Elem "()") :: Tm_Var "bad" :: []).
-Compute (eval_prog [] example_bad_prog).
 Compute (infer_type_prog [] example_bad_prog).
+Compute (eval_prog [] example_bad_prog).
 
 (* Плохая программа - объявление переменных не на топлевеле *)
 Example example_bad_prog2 := [Tm_Prod [Tm_Elem ""; Tm_DeclVar "bed" (Tm_Elem "()")]].
-Compute (eval_prog [] example_bad_prog2).
 Compute (infer_type_prog [] example_bad_prog2).
+Compute (eval_prog [] example_bad_prog2).
 
 (* Плохая программа - затенение переменных *)
 Example example_bad_prog3 := [Tm_DeclVar "input" (Tm_Elem "bla");
   Tm_DeclVar "input" (Tm_Prod [Tm_Elem "0"; Tm_Elem "2"; Tm_Elem "VAL"]);
   Tm_Var "myvar"].
-Compute (eval_prog [] example_bad_prog3).
 Compute (infer_type_prog [] example_bad_prog3).
+Compute (eval_prog [] example_bad_prog3).
 
 (* Плохая программа - прямое использование Ty_Cmd *)
 Example example_bad_prog4 : prog := [Tm_Subst Ty_Cmd].
-Compute (eval_prog [] example_bad_prog4).
 Compute (infer_type_prog [] example_bad_prog4).
-
-(* Плохая программа - использование переменной в Tm_Sing *)
-Example example_bad_prog5 := [
-  Tm_DeclVar "input" (Tm_Elem "bla"); 
-  Tm_DeclVar "myvar" (Tm_Prod [Tm_Elem "0"; Tm_Sing (Tm_Var "input"); Tm_Elem "2"; Tm_Elem "VAL"]);
-  Tm_Var "myvar"].
-Compute (eval_prog [] example_bad_prog5).
-Compute (infer_type_prog [] example_bad_prog5).
+Compute (eval_prog [] example_bad_prog4).
