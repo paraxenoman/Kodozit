@@ -16,6 +16,7 @@ Inductive prim : Type :=
 
 (* Синтаксис типов  *)
 Inductive type : Type :=
+  | Ty_Error : type
   | Ty_Var : TypeName -> type
   | Ty_Cmd : type
   | Ty_Elem : elem -> type
@@ -25,6 +26,7 @@ Inductive type : Type :=
   | Ty_Prod : list type -> type
 with term : Type :=
 (* Синтаксис термов  *)
+  | Tm_Error : term
   | Tm_Var : VarName -> term
   | Tm_DeclVar : VarName -> term -> term
   | Tm_DeclType : TypeName -> type -> term
@@ -163,6 +165,7 @@ Fixpoint eval_term (Sigma : eval_context) (tm : term) : EvalResult :=
           | _ => novalue
           end
       end
+  | Tm_Error => novalue
   end.
 
 Fixpoint list_eqb {A} (feq : A -> A -> bool)
@@ -184,13 +187,19 @@ Definition prim_beq (p1 p2 : prim) : bool :=
 (* Функция нормализации для типов *)
 Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : InferTypeResult :=
     match T with
+    | Ty_Error => notype
     | Ty_Var tn => type_name_lookup Γ tn
     | Ty_Sing tm =>
       match infer_type_term Γ tm with
       | FailType => notype
       | TypeCtx tytm _ => sometype (Ty_Sing tm) Γ
       end
-    | Ty_Subst ty => norm_type Γ ty
+    | Ty_Subst ty => 
+        match norm_type Γ ty with
+        | FailType => notype
+        | TypeCtx nrmty ctx => sometype (Ty_Subst nrmty) ctx
+        end
+        
     | Ty_Prod [x] => norm_type Γ x
     | Ty_Prod (p1 :: ps) =>
        let fix norm_list (ts : list type) : option (list type) :=
@@ -220,6 +229,7 @@ Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : InferTypeResult :
 (* Функция вывода и проверки типов *)
 with infer_type_term (Γ : type_context) (tm : term) : InferTypeResult :=
   match tm with
+  | Tm_Error => FailType
   | Tm_Var x => var_type_lookup Γ x
   | Tm_DeclVar x tm =>
       match var_type_lookup Γ x with
@@ -303,43 +313,50 @@ with infer_type_term (Γ : type_context) (tm : term) : InferTypeResult :=
       end
   end.
 
-(* Функция булевого равенства для термов *)
-Definition term_beq (ctx : eval_context) (it1 it2 : term) : bool :=
-  match eval_term ctx it1, eval_term ctx it2 with
-  | ValCtx T1 _, ValCtx T2 _ =>
-    let fix norm_term_beq (nt1 nt2 : term) : bool :=
-      match nt1, nt2 with
+(* Функция булевого равенства для термов без приведения в номальную форму *)
+Fixpoint term_beq (it1 it2 : term) : bool :=
+      match it1, it2 with
+      | Tm_Var vn1, Tm_Var vn2 => eqb vn1 vn2
       | Tm_Cmd, Tm_Cmd => true
       | Tm_Elem e1, Tm_Elem e2 => eqb e1 e2
       | Tm_Prim p1, Tm_Prim p2 => prim_beq p1 p2
-      | Tm_Sing tm1, Tm_Sing tm2 => norm_term_beq tm1 tm2
-      (* TODO | Tm_Subst tp1, Tm_Subst tp2 => type_beq [] tp1 tp2*)
-      | Tm_Prod l1, Tm_Prod l2 => list_eqb norm_term_beq l1 l2
+      | Tm_Sing tm1, Tm_Sing tm2 => term_beq tm1 tm2
+      | Tm_Subst tp1, Tm_Subst tp2 => type_beq tp1 tp2
+      | Tm_Prod l1, Tm_Prod l2 => list_eqb term_beq l1 l2
       | _, _ => false
       end
-    in
-      norm_term_beq T1 T2
-  | _, _ => false
-  end.
-
-(* Функция булевого равенства для типов *)
-Definition type_beq (ctx : type_context) (it1 it2 : type) : bool := 
-  match norm_type ctx it1, norm_type ctx it2 with
-  | TypeCtx T1 _, TypeCtx T2 _ => 
-    let fix norm_type_beq (nt1 nt2 : type) : bool :=
-      match nt1, nt2 with
+(* Функция булевого равенства для типов без нормализации *)
+with type_beq (it1 it2 : type) : bool := 
+      match it1, it2 with
+      | Ty_Var vn1, Ty_Var vn2 => eqb vn1 vn2
       | Ty_Cmd, Ty_Cmd => true
       | Ty_Elem e1, Ty_Elem e2 => eqb e1 e2
       | Ty_Prim p1, Ty_Prim p2 => prim_beq p1 p2
-      | Ty_Sing tm1, Ty_Sing tm2 => term_beq [] tm1 tm2
-      | Ty_Subst tp1, Ty_Subst tp2 => norm_type_beq tp1 tp2
-      | Ty_Prod l1, Ty_Prod l2 => list_eqb norm_type_beq l1 l2
+      | Ty_Sing tm1, Ty_Sing tm2 => term_beq tm1 tm2
+      | Ty_Subst tp1, Ty_Subst tp2 => type_beq tp1 tp2
+      | Ty_Prod l1, Ty_Prod l2 => list_eqb type_beq l1 l2
       | _, _ => false
-      end
-    in
-      norm_type_beq T1 T2
-  | _, _ => false
-  end.
+      end.
+
+(* Функция булевого равенства для нормальных форм термов *)
+Definition norm_term_beq (ctx : eval_context) (it1 it2 : term) : bool :=
+  let mnt1 := eval_term ctx it1 
+    in let mnt2 := eval_term ctx it2
+      in
+        match mnt1, mnt2 with
+        | ValCtx nt1 _, ValCtx nt2 _ => term_beq nt1 nt2
+        | _, _ => false
+        end.
+
+(* Функция булевого равенства для нормализованых типов *)
+Definition norm_type_beq (ctx : type_context) (it1 it2 : type) : bool :=
+  let mnt1 := norm_type ctx it1 
+    in let mnt2 := norm_type ctx it2
+      in
+        match mnt1, mnt2 with
+        | TypeCtx nt1 _, TypeCtx nt2 _ => type_beq nt1 nt2
+        | _, _ => false
+        end.
 
 Definition prog : Type := list term.
 
@@ -388,6 +405,7 @@ Fixpoint unfold_type
     (T : type) {struct T}
   : type :=
   match T with
+  | Ty_Error => Ty_Error
   | Ty_Var X =>
       match lookup_type_def Delta X with
       | Some T' => T'
@@ -402,7 +420,10 @@ Fixpoint unfold_type
       Ty_Sing (unfold_term Sigma Delta tm)
 
   | Ty_Subst T1 =>
-      Ty_Subst (unfold_type Sigma Delta T1)
+      match norm_type [] (Ty_Subst (unfold_type Sigma Delta T1)) with
+      | TypeCtx ntp _ => ntp
+      | _ => Ty_Error
+      end
 
   | Ty_Prod Ts =>
       let fix go (xs : list type) : list type :=
@@ -420,6 +441,7 @@ with unfold_term
     (tm : term) {struct tm}
   : term :=
   match tm with
+  | Tm_Error => Tm_Error
   | Tm_Var x =>
       match lookup_term_def Sigma x with
       | Some tm' => tm'
@@ -437,10 +459,16 @@ with unfold_term
   | Tm_Prim p => Tm_Prim p
 
   | Tm_Sing s =>
-      Tm_Sing (unfold_term Sigma Delta s)
+      match eval_term [] (Tm_Sing (unfold_term Sigma Delta s)) with
+      | ValCtx ntm _ => ntm
+      | _ => Tm_Error
+      end
 
   | Tm_Subst T =>
-      Tm_Subst (unfold_type Sigma Delta T)
+      match norm_type [] (unfold_type Sigma Delta T) with
+      | TypeCtx ntp _ => Tm_Subst ntp
+      | _ => Tm_Error
+      end
 
   | Tm_Prod ts =>
       let fix go (xs : list term) : list term :=
@@ -540,7 +568,7 @@ Definition eval_prog (Sigma : eval_context) (prg : prog) : option term :=
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog := [
   Tm_DeclVar "sing" (Tm_Sing (Tm_Prod [Tm_Elem "bla"])); 
-  Tm_DeclVar "myvar" (Tm_Prod [Tm_Elem "0"; Tm_Var "sing"; Tm_Elem "2"; Tm_Elem "VAL"]);
+  Tm_DeclVar "myvar" (Tm_Prod [Tm_Subst (Ty_Prod [Ty_Elem "one"]); Tm_Elem "0"; Tm_Var "sing"; Tm_Elem "2"; Tm_Elem "VAL"]);
   Tm_Var "myvar"].
 Compute (infer_type_prog [] example_good_prog).
 Compute (eval_prog [] example_good_prog).
