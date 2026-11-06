@@ -317,7 +317,6 @@ with infer_type_term (Γ : type_context) (tm : term) : InferTypeResult :=
 Fixpoint term_beq (it1 it2 : term) : bool :=
       match it1, it2 with
       | Tm_Var vn1, Tm_Var vn2 => eqb vn1 vn2
-      | Tm_Cmd, Tm_Cmd => true
       | Tm_Elem e1, Tm_Elem e2 => eqb e1 e2
       | Tm_Prim p1, Tm_Prim p2 => prim_beq p1 p2
       | Tm_Sing tm1, Tm_Sing tm2 => term_beq tm1 tm2
@@ -329,7 +328,6 @@ Fixpoint term_beq (it1 it2 : term) : bool :=
 with type_beq (it1 it2 : type) : bool := 
       match it1, it2 with
       | Ty_Var vn1, Ty_Var vn2 => eqb vn1 vn2
-      | Ty_Cmd, Ty_Cmd => true
       | Ty_Elem e1, Ty_Elem e2 => eqb e1 e2
       | Ty_Prim p1, Ty_Prim p2 => prim_beq p1 p2
       | Ty_Sing tm1, Ty_Sing tm2 => term_beq tm1 tm2
