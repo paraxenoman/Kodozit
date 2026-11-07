@@ -17,7 +17,7 @@ Inductive prim : Type :=
 (* Синтаксис типов  *)
 Inductive type : Type :=
   | Ty_Error : type
-  | Ty_Var : TypeName -> type
+  | Ty_Abbr : TypeName -> type
   | Ty_Cmd : type
   | Ty_Elem : elem -> type
   | Ty_Prim : prim -> type
@@ -29,7 +29,7 @@ with term : Type :=
   | Tm_Error : term
   | Tm_Var : VarName -> term
   | Tm_DeclVar : VarName -> term -> term
-  | Tm_DeclType : TypeName -> type -> term
+  | Tm_NewTypeAbbr : TypeName -> type -> term
   | Tm_Cmd : term
   | Tm_Elem : elem -> term
   | Tm_Prim : prim -> term
@@ -41,7 +41,7 @@ Notation Tm_Unit := (Tm_Prod []).
 Notation Ty_Unit := (Ty_Prod []).
 
 Inductive TypeBinding : Type :=
-  | BindTypeName : TypeName -> type -> TypeBinding
+  | BindTypeAbbr : TypeName -> type -> TypeBinding
   | BindVarType : VarName -> type -> TypeBinding
   | BindCombType : list type -> type -> TypeBinding.
 
@@ -55,15 +55,16 @@ Inductive InferTypeResult : Type :=
 Definition sometype t Γ := TypeCtx t Γ.
 Definition notype := FailType.
 
-Fixpoint type_name_lookup (Γ : type_context) (X : TypeName) : option type :=
+(* Функция поиска типа по его синониму (аббревиатуре) *)
+Fixpoint type_abbr_lookup (Γ : type_context) (X : TypeName) : option type :=
   match Γ with
   | [] => None
-  | (BindTypeName Y T) :: rest => 
+  | (BindTypeAbbr Y T) :: rest => 
       if eqb X Y then 
         Some T 
       else 
-        type_name_lookup rest X
-  | _ :: rest => type_name_lookup rest X
+        type_abbr_lookup rest X
+  | _ :: rest => type_abbr_lookup rest X
   end.
 
 (* Функция поиска типа переменной в контексте *)
@@ -120,7 +121,7 @@ Fixpoint eval_term (Sigma : eval_context) (tm : term) : EvalResult :=
           | FailValue => novalue
           end
       end
-  | Tm_DeclType _ _ => somevalue Tm_Cmd Sigma
+  | Tm_NewTypeAbbr _ _ => somevalue Tm_Cmd Sigma
   | Tm_Cmd => somevalue Tm_Cmd Sigma 
   | Tm_Elem e => somevalue (Tm_Elem e) Sigma
   | Tm_Prim p => somevalue (Tm_Prim p) Sigma
@@ -168,6 +169,7 @@ Fixpoint eval_term (Sigma : eval_context) (tm : term) : EvalResult :=
   | Tm_Error => novalue
   end.
 
+(* Функция равенства двух списков *)
 Fixpoint list_eqb {A} (feq : A -> A -> bool)
                   (l1 l2 : list A) : bool :=
   match l1, l2 with
@@ -177,6 +179,7 @@ Fixpoint list_eqb {A} (feq : A -> A -> bool)
   | _, _ => false
   end.
 
+(* Функция равенства примов *)
 Definition prim_beq (p1 p2 : prim) : bool :=
   match p1, p2 with
   | Prm_Left, Prm_Left => true
@@ -188,7 +191,7 @@ Definition prim_beq (p1 p2 : prim) : bool :=
 Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : option type :=
     match T with
     | Ty_Error => None
-    | Ty_Var tn => type_name_lookup Γ tn
+    | Ty_Abbr tn => type_abbr_lookup Γ tn
     | Ty_Sing tm =>
       match infer_type_term Γ tm with
       | FailType => None
@@ -248,12 +251,12 @@ with infer_type_term (Γ : type_context) (tm : term) : InferTypeResult :=
               end
           end
       end
-  | Tm_DeclType x T =>
-      match type_name_lookup Γ x with
+  | Tm_NewTypeAbbr x T =>
+      match type_abbr_lookup Γ x with
       | Some _ => notype
       | None => 
         match norm_type Γ T with
-        | Some TN => sometype Ty_Cmd (BindTypeName x TN :: Γ)
+        | Some TN => sometype Ty_Cmd (BindTypeAbbr x TN :: Γ)
         | None => notype
         end
       end
@@ -331,7 +334,7 @@ Fixpoint term_beq (it1 it2 : term) : bool :=
 (* Функция булевого равенства для типов без нормализации *)
 with type_beq (it1 it2 : type) : bool := 
       match it1, it2 with
-      | Ty_Var vn1, Ty_Var vn2 => eqb vn1 vn2
+      | Ty_Abbr vn1, Ty_Abbr vn2 => eqb vn1 vn2
       | Ty_Elem e1, Ty_Elem e2 => eqb e1 e2
       | Ty_Prim p1, Ty_Prim p2 => prim_beq p1 p2
       | Ty_Sing tm1, Ty_Sing tm2 => term_beq tm1 tm2
@@ -408,10 +411,10 @@ Fixpoint unfold_type
   : type :=
   match T with
   | Ty_Error => Ty_Error
-  | Ty_Var X =>
+  | Ty_Abbr X =>
       match lookup_type_def Delta X with
       | Some T' => T'
-      | None => Ty_Var X
+      | None => Ty_Abbr X
       end
 
   | Ty_Cmd => Ty_Cmd
@@ -453,8 +456,8 @@ with unfold_term
   | Tm_DeclVar x rhs =>
       Tm_DeclVar x (unfold_term Sigma Delta rhs)
 
-  | Tm_DeclType X T =>
-      Tm_DeclType X (unfold_type Sigma Delta T)
+  | Tm_NewTypeAbbr X T =>
+      Tm_NewTypeAbbr X (unfold_type Sigma Delta T)
 
   | Tm_Cmd => Tm_Cmd
   | Tm_Elem e => Tm_Elem e
@@ -500,9 +503,9 @@ Fixpoint unfold_prog_aux
              Delta
              rest
 
-  | Tm_DeclType X T :: rest =>
+  | Tm_NewTypeAbbr X T :: rest =>
       let T' := unfold_type Sigma Delta T in
-      Tm_DeclType X T'
+      Tm_NewTypeAbbr X T'
         :: unfold_prog_aux
              Sigma
              ((X, T') :: Delta)
