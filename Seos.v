@@ -55,24 +55,24 @@ Inductive InferTypeResult : Type :=
 Definition sometype t Γ := TypeCtx t Γ.
 Definition notype := FailType.
 
-Fixpoint type_name_lookup (Γ : type_context) (X : TypeName) : InferTypeResult :=
+Fixpoint type_name_lookup (Γ : type_context) (X : TypeName) : option type :=
   match Γ with
-  | [] => FailType
+  | [] => None
   | (BindTypeName Y T) :: rest => 
       if eqb X Y then 
-        sometype T Γ 
+        Some T 
       else 
         type_name_lookup rest X
   | _ :: rest => type_name_lookup rest X
   end.
 
 (* Функция поиска типа переменной в контексте *)
-Fixpoint var_type_lookup (Γ : type_context) (x : VarName) : InferTypeResult :=
+Fixpoint var_type_lookup (Γ : type_context) (x : VarName) : option type :=
   match Γ with
-  | [] => FailType
+  | [] => None
   | (BindVarType y T) :: rest => 
       if eqb x y then
-        sometype T Γ 
+        Some T 
       else 
         var_type_lookup rest x
   | _ :: rest => var_type_lookup rest x
@@ -185,19 +185,19 @@ Definition prim_beq (p1 p2 : prim) : bool :=
   end.
 
 (* Функция нормализации для типов *)
-Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : InferTypeResult :=
+Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : option type :=
     match T with
-    | Ty_Error => notype
+    | Ty_Error => None
     | Ty_Var tn => type_name_lookup Γ tn
     | Ty_Sing tm =>
       match infer_type_term Γ tm with
-      | FailType => notype
-      | TypeCtx tytm _ => sometype (Ty_Sing tm) Γ
+      | FailType => None
+      | TypeCtx tytm _ => Some (Ty_Sing tm)
       end
     | Ty_Subst ty => 
         match norm_type Γ ty with
-        | FailType => notype
-        | TypeCtx nrmty ctx => sometype (Ty_Subst nrmty) ctx
+        | None => None
+        | Some nrmty => Some (Ty_Subst nrmty)
         end
         
     | Ty_Prod [x] => norm_type Γ x
@@ -207,7 +207,7 @@ Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : InferTypeResult :
           | [] => Some []
           | t :: rest =>
             match norm_type Γ t with
-            | TypeCtx nrmpt _ =>
+            | Some nrmpt =>
                 match nrmpt with
                 | Ty_Cmd => None
                 | _ => 
@@ -216,25 +216,29 @@ Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : InferTypeResult :
                     | None => None
                     end
                 end
-            | FailType => None
+            | None => None
             end
           end
         in
           match norm_list (p1 :: ps) with 
-          | Some P => sometype (Ty_Prod P) Γ 
-          | None => FailType 
+          | Some P => Some (Ty_Prod P) 
+          | None => None
           end
-    | _ => sometype T Γ
+    | _ => Some T
     end
 (* Функция вывода и проверки типов *)
 with infer_type_term (Γ : type_context) (tm : term) : InferTypeResult :=
   match tm with
   | Tm_Error => FailType
-  | Tm_Var x => var_type_lookup Γ x
+  | Tm_Var x => 
+      match var_type_lookup Γ x with
+      | Some T => sometype T Γ
+      | None => notype
+      end
   | Tm_DeclVar x tm =>
       match var_type_lookup Γ x with
-      | TypeCtx _ _ => notype
-      | FailType =>
+      | Some _ => notype
+      | None =>
           match infer_type_term Γ tm with
           | FailType => notype
           | TypeCtx T Γ2 => 
@@ -246,11 +250,11 @@ with infer_type_term (Γ : type_context) (tm : term) : InferTypeResult :=
       end
   | Tm_DeclType x T =>
       match type_name_lookup Γ x with
-      | TypeCtx _ _ => notype
-      | FailType => 
+      | Some _ => notype
+      | None => 
         match norm_type Γ T with
-        | TypeCtx TN _ => sometype Ty_Cmd (BindTypeName x TN :: Γ)
-        | FailType => notype
+        | Some TN => sometype Ty_Cmd (BindTypeName x TN :: Γ)
+        | None => notype
         end
       end
   | Tm_Cmd => sometype Ty_Cmd Γ
@@ -274,8 +278,8 @@ with infer_type_term (Γ : type_context) (tm : term) : InferTypeResult :=
       | Ty_Cmd => notype
       | _ => 
         match norm_type Γ T with 
-        | TypeCtx NT _ => sometype (Ty_Subst NT) Γ
-        | FailType => notype
+        | Some NT => sometype (Ty_Subst NT) Γ
+        | None => notype
         end
       end
   | Tm_Prod [] => sometype Ty_Unit Γ
@@ -352,7 +356,7 @@ Definition norm_type_beq (ctx : type_context) (it1 it2 : type) : bool :=
     in let mnt2 := norm_type ctx it2
       in
         match mnt1, mnt2 with
-        | TypeCtx nt1 _, TypeCtx nt2 _ => type_beq nt1 nt2
+        | Some nt1, Some nt2 => type_beq nt1 nt2
         | _, _ => false
         end.
 
@@ -419,7 +423,7 @@ Fixpoint unfold_type
 
   | Ty_Subst T1 =>
       match norm_type [] (Ty_Subst (unfold_type Sigma Delta T1)) with
-      | TypeCtx ntp _ => ntp
+      | Some ntp => ntp
       | _ => Ty_Error
       end
 
@@ -464,7 +468,7 @@ with unfold_term
 
   | Tm_Subst T =>
       match norm_type [] (unfold_type Sigma Delta T) with
-      | TypeCtx ntp _ => Tm_Subst ntp
+      | Some ntp => Tm_Subst ntp
       | _ => Tm_Error
       end
 
@@ -600,3 +604,7 @@ Compute (eval_prog [] example_bad_prog3).
 Example example_bad_prog4 : prog := [Tm_Subst Ty_Cmd].
 Compute (infer_type_prog [] example_bad_prog4).
 Compute (eval_prog [] example_bad_prog4).
+
+
+
+
