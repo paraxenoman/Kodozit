@@ -6,6 +6,16 @@ Import ListNotations.
 Open Scope string_scope.
 Open Scope bool_scope.
 
+(* Функция равенства двух списков *)
+Fixpoint list_eqb {A} (feq : A -> A -> bool)
+                  (l1 l2 : list A) : bool :=
+  match l1, l2 with
+  | [], [] => true
+  | x1 :: t1, x2 :: t2 =>
+      feq x1 x2 && list_eqb feq t1 t2
+  | _, _ => false
+  end.
+
 Definition TypeName : Type := string.
 Definition VarName : Type := string.
 Definition elem : Type := string.
@@ -13,6 +23,14 @@ Definition elem : Type := string.
 Inductive prim : Type :=
   | Prm_Left : prim
   | Prm_Right : prim.
+
+(* Функция равенства примов *)
+Definition prim_beq (p1 p2 : prim) : bool :=
+  match p1, p2 with
+  | Prm_Left, Prm_Left => true
+  | Prm_Right, Prm_Right => true
+  | _, _ => false
+  end.
 
 (* Синтаксис типов  *)
 Inductive type : Type :=
@@ -24,18 +42,21 @@ Inductive type : Type :=
   | Ty_Sing : term -> type
   | Ty_Subst : type -> type
   | Ty_Prod : list type -> type
+  | Ty_Comb : TypeName -> type
 with term : Type :=
 (* Синтаксис термов  *)
   | Tm_Error : term
   | Tm_Var : VarName -> term
   | Tm_DeclVar : VarName -> term -> term
   | Tm_NewTypeAbbr : TypeName -> type -> term
+  | Tm_DeclCombType : TypeName -> list type -> term
   | Tm_Cmd : term
   | Tm_Elem : elem -> term
   | Tm_Prim : prim -> term
   | Tm_Sing : term -> term
   | Tm_Subst : type -> term
-  | Tm_Prod : list term -> term.
+  | Tm_Prod : list term -> term
+  | Tm_Comb : list term -> term.
 
 Notation Tm_Unit := (Tm_Prod []).
 Notation Ty_Unit := (Ty_Prod []).
@@ -43,7 +64,7 @@ Notation Ty_Unit := (Ty_Prod []).
 Inductive TypeBinding : Type :=
   | BindTypeAbbr : TypeName -> type -> TypeBinding
   | BindVarType : VarName -> type -> TypeBinding
-  | BindCombType : list type -> type -> TypeBinding.
+  | BindCombType : TypeName -> list type -> TypeBinding.
 
 (* Контекст типизации *)
 Definition type_context := list TypeBinding.
@@ -78,7 +99,7 @@ Fixpoint var_type_lookup (Γ : type_context) (x : VarName) : option type :=
         var_type_lookup rest x
   | _ :: rest => var_type_lookup rest x
   end.
-  
+
 Inductive VarValueBinding : Type :=
   | BindVarValue : VarName -> term -> VarValueBinding.
 
@@ -103,7 +124,48 @@ Inductive EvalResult : Type :=
 Definition somevalue term Sigma := ValCtx term Sigma.
 Definition novalue := FailValue.
 
-(* Функция вычисления термов *)
+Fixpoint eval_term_list 
+        (f : eval_context -> term -> EvalResult) 
+        (Sigma : eval_context)
+        (ts : list term) 
+        : option (list term) :=
+  match ts with
+  | [] => Some []
+  | t :: rest =>
+      match f Sigma t with
+      | ValCtx Tm_Cmd _ => None
+      | ValCtx v ctx => 
+          match (eval_term_list f ctx rest) with
+          | Some lt => Some (v :: lt)
+          | _ => None
+          end
+      | _ => None
+      end
+  end.
+
+Fixpoint norm_list 
+      (f : type_context -> type -> option type) 
+      (Γ : type_context) 
+      (ts : list type) 
+      : option (list type) :=
+  match ts with
+  | [] => Some []
+  | t :: rest =>
+    match f Γ t with
+    | Some nrmpt =>
+        match nrmpt with
+        | Ty_Cmd => None
+        | _ => 
+            match norm_list f Γ rest with
+            | Some nrmpts => Some (nrmpt :: nrmpts)
+            | None => None
+            end
+        end
+    | None => None
+    end
+  end.
+
+(* Функция вычисления термов *) 
 Fixpoint eval_term (Sigma : eval_context) (tm : term) : EvalResult :=
   match tm with
   | Tm_Var x =>
@@ -122,6 +184,7 @@ Fixpoint eval_term (Sigma : eval_context) (tm : term) : EvalResult :=
           end
       end
   | Tm_NewTypeAbbr _ _ => somevalue Tm_Cmd Sigma
+  | Tm_DeclCombType _ _ => somevalue Tm_Cmd Sigma
   | Tm_Cmd => somevalue Tm_Cmd Sigma 
   | Tm_Elem e => somevalue (Tm_Elem e) Sigma
   | Tm_Prim p => somevalue (Tm_Prim p) Sigma
@@ -146,45 +209,101 @@ Fixpoint eval_term (Sigma : eval_context) (tm : term) : EvalResult :=
           | v => v
           end
       | _ =>
-          let fix eval_list (ts : list term) : option (list term) :=
-            match ts with
-            | [] => Some []
-            | t :: rest =>
-                match eval_term Sigma t with
-                | ValCtx Tm_Cmd _ => None
-                | ValCtx v _ => 
-                    match (eval_list rest) with
-                    | Some lt => Some (v :: lt)
-                    | _ => None
-                    end
-                | _ => None
-                end
-            end
-          in
-          match (eval_list p) with
+          match (eval_term_list eval_term Sigma p) with
           | Some l => somevalue (Tm_Prod l) Sigma
           | _ => novalue
           end
       end
   | Tm_Error => novalue
+  | Tm_Comb lst =>
+      match (eval_term_list eval_term Sigma lst) with
+      | Some l => somevalue (Tm_Comb l) Sigma
+      | _ => novalue
+      end
   end.
 
-(* Функция равенства двух списков *)
-Fixpoint list_eqb {A} (feq : A -> A -> bool)
-                  (l1 l2 : list A) : bool :=
-  match l1, l2 with
-  | [], [] => true
-  | x1 :: t1, x2 :: t2 =>
-      feq x1 x2 && list_eqb feq t1 t2
-  | _, _ => false
+(* Функция булевого равенства для термов без приведения в номальную форму *)
+Fixpoint term_beq (it1 it2 : term) : bool :=
+      match it1, it2 with
+      | Tm_Var vn1, Tm_Var vn2 => eqb vn1 vn2
+      | Tm_Elem e1, Tm_Elem e2 => eqb e1 e2
+      | Tm_Prim p1, Tm_Prim p2 => prim_beq p1 p2
+      | Tm_Sing tm1, Tm_Sing tm2 => term_beq tm1 tm2
+      | Tm_Subst tp1, Tm_Subst tp2 => type_beq tp1 tp2
+      | Tm_Prod l1, Tm_Prod l2 => list_eqb term_beq l1 l2
+      | Tm_Comb l1, Tm_Comb l2 => list_eqb term_beq l1 l2
+      | _, _ => false
+      end
+(* Функция булевого равенства для типов без нормализации *)
+with type_beq (it1 it2 : type) : bool := 
+      match it1, it2 with
+      | Ty_Abbr vn1, Ty_Abbr vn2 => eqb vn1 vn2
+      | Ty_Elem e1, Ty_Elem e2 => eqb e1 e2
+      | Ty_Prim p1, Ty_Prim p2 => prim_beq p1 p2
+      | Ty_Sing tm1, Ty_Sing tm2 => term_beq tm1 tm2
+      | Ty_Subst tp1, Ty_Subst tp2 => type_beq tp1 tp2
+      | Ty_Prod l1, Ty_Prod l2 => list_eqb type_beq l1 l2
+      | Ty_Comb vn1, Ty_Comb vn2 => eqb vn1 vn2
+      | _, _ => false
+      end.
+
+(* Функция булевого равенства для нормальных форм термов *)
+Definition norm_term_beq (f : eval_context -> term -> EvalResult) (ctx : eval_context) (it1 it2 : term) : bool :=
+  let mnt1 := f ctx it1 
+    in let mnt2 := f ctx it2
+      in
+        match mnt1, mnt2 with
+        | ValCtx nt1 _, ValCtx nt2 _ => term_beq nt1 nt2
+        | _, _ => false
+        end.
+        
+(* Функция булевого равенства для нормализованых типов *)
+Definition norm_type_beq (f : type_context -> type -> option type) (ctx : type_context) (it1 it2 : type) : bool :=
+  let mnt1 := f ctx it1 
+    in let mnt2 := f ctx it2
+      in
+        match mnt1, mnt2 with
+        | Some nt1, Some nt2 => type_beq nt1 nt2
+        | _, _ => false
+        end.
+
+(* Функция поиска типа комбинации *)
+Fixpoint type_comb_lookup 
+      (Γ : type_context) 
+      (lst : list type) 
+      {struct Γ} : option type :=
+  match Γ with
+  | [] => None
+  | (BindCombType TN LST) :: rest => 
+      if list_eqb type_beq lst LST then 
+        Some (Ty_Comb TN)
+      else 
+        type_comb_lookup rest lst
+  | _ :: rest => type_comb_lookup rest lst
   end.
 
-(* Функция равенства примов *)
-Definition prim_beq (p1 p2 : prim) : bool :=
-  match p1, p2 with
-  | Prm_Left, Prm_Left => true
-  | Prm_Right, Prm_Right => true
-  | _, _ => false
+(* Вспомогательная функция для вывода типов для списка термов *)
+Fixpoint infer_list 
+          (f : type_context -> term -> InferTypeResult)
+          (Γ : type_context)
+          (ts : list term)
+          {struct ts}
+          : option (list type) :=
+  match ts with
+  | [] => Some []
+  | t :: rest =>
+      match f Γ t with
+      | TypeCtx T _ =>
+          match T with
+          | Ty_Cmd => None
+          | _ => 
+              match infer_list f Γ rest with
+              | Some Ts => Some (T :: Ts)
+              | None => None
+              end
+          end
+      | FailType => None
+      end
   end.
 
 (* Функция нормализации для типов *)
@@ -202,31 +321,12 @@ Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : option type :=
         | None => None
         | Some nrmty => Some (Ty_Subst nrmty)
         end
-        
     | Ty_Prod [x] => norm_type Γ x
     | Ty_Prod (p1 :: ps) =>
-       let fix norm_list (ts : list type) : option (list type) :=
-          match ts with
-          | [] => Some []
-          | t :: rest =>
-            match norm_type Γ t with
-            | Some nrmpt =>
-                match nrmpt with
-                | Ty_Cmd => None
-                | _ => 
-                    match norm_list rest with
-                    | Some nrmpts => Some (nrmpt :: nrmpts)
-                    | None => None
-                    end
-                end
-            | None => None
-            end
-          end
-        in
-          match norm_list (p1 :: ps) with 
-          | Some P => Some (Ty_Prod P) 
-          | None => None
-          end
+        match norm_list norm_type Γ (p1 :: ps) with 
+        | Some P => Some (Ty_Prod P) 
+        | None => None
+        end
     | _ => Some T
     end
 (* Функция вывода и проверки типов *)
@@ -259,6 +359,15 @@ with infer_type_term (Γ : type_context) (tm : term) : InferTypeResult :=
         | Some TN => sometype Ty_Cmd (BindTypeAbbr x TN :: Γ)
         | None => notype
         end
+      end
+  | Tm_DeclCombType tn lst =>
+      match type_comb_lookup Γ lst with
+      | Some _ => notype
+      | None => 
+          match norm_list norm_type Γ lst with
+          | Some nrmlst => sometype Ty_Cmd (BindCombType tn nrmlst :: Γ)
+          | None => notype
+          end
       end
   | Tm_Cmd => sometype Ty_Cmd Γ
   | Tm_Elem u => sometype (Ty_Elem u) Γ
@@ -296,72 +405,20 @@ with infer_type_term (Γ : type_context) (tm : term) : InferTypeResult :=
       | FailType => notype
       end
   | Tm_Prod (p1 :: ps) =>
-      let fix infer_list (ts : list term) : option (list type) :=
-        match ts with
-        | [] => Some []
-        | t :: rest =>
-            match infer_type_term Γ t with
-            | TypeCtx T _ =>
-                match T with
-                | Ty_Cmd => None
-                | _ => 
-                    match infer_list rest with
-                    | Some Ts => Some (T :: Ts)
-                    | None => None
-                    end
-                end
-            | FailType => None
-            end
-        end
-      in
-      match infer_list (p1 :: ps) with
+      match infer_list infer_type_term Γ (p1 :: ps) with
       | Some P => sometype (Ty_Prod P) Γ 
       | None => FailType 
       end
+  | Tm_Comb lst =>
+      match infer_list infer_type_term Γ lst with
+      | Some wtlst => 
+          match type_comb_lookup Γ wtlst with
+          | Some (Ty_Comb TN) => sometype (Ty_Comb TN) Γ
+          | _ => FailType
+          end
+      | None => FailType 
+      end 
   end.
-
-(* Функция булевого равенства для термов без приведения в номальную форму *)
-Fixpoint term_beq (it1 it2 : term) : bool :=
-      match it1, it2 with
-      | Tm_Var vn1, Tm_Var vn2 => eqb vn1 vn2
-      | Tm_Elem e1, Tm_Elem e2 => eqb e1 e2
-      | Tm_Prim p1, Tm_Prim p2 => prim_beq p1 p2
-      | Tm_Sing tm1, Tm_Sing tm2 => term_beq tm1 tm2
-      | Tm_Subst tp1, Tm_Subst tp2 => type_beq tp1 tp2
-      | Tm_Prod l1, Tm_Prod l2 => list_eqb term_beq l1 l2
-      | _, _ => false
-      end
-(* Функция булевого равенства для типов без нормализации *)
-with type_beq (it1 it2 : type) : bool := 
-      match it1, it2 with
-      | Ty_Abbr vn1, Ty_Abbr vn2 => eqb vn1 vn2
-      | Ty_Elem e1, Ty_Elem e2 => eqb e1 e2
-      | Ty_Prim p1, Ty_Prim p2 => prim_beq p1 p2
-      | Ty_Sing tm1, Ty_Sing tm2 => term_beq tm1 tm2
-      | Ty_Subst tp1, Ty_Subst tp2 => type_beq tp1 tp2
-      | Ty_Prod l1, Ty_Prod l2 => list_eqb type_beq l1 l2
-      | _, _ => false
-      end.
-
-(* Функция булевого равенства для нормальных форм термов *)
-Definition norm_term_beq (ctx : eval_context) (it1 it2 : term) : bool :=
-  let mnt1 := eval_term ctx it1 
-    in let mnt2 := eval_term ctx it2
-      in
-        match mnt1, mnt2 with
-        | ValCtx nt1 _, ValCtx nt2 _ => term_beq nt1 nt2
-        | _, _ => false
-        end.
-
-(* Функция булевого равенства для нормализованых типов *)
-Definition norm_type_beq (ctx : type_context) (it1 it2 : type) : bool :=
-  let mnt1 := norm_type ctx it1 
-    in let mnt2 := norm_type ctx it2
-      in
-        match mnt1, mnt2 with
-        | Some nt1, Some nt2 => type_beq nt1 nt2
-        | _, _ => false
-        end.
 
 Definition prog : Type := list term.
 
@@ -438,6 +495,7 @@ Fixpoint unfold_type
               unfold_type Sigma Delta x :: go rest
           end
       in Ty_Prod (go Ts)
+  | Ty_Comb tn => Ty_Comb tn
   end
 
 with unfold_term
@@ -458,6 +516,16 @@ with unfold_term
 
   | Tm_NewTypeAbbr X T =>
       Tm_NewTypeAbbr X (unfold_type Sigma Delta T)
+      
+  | Tm_DeclCombType tn lst =>
+      let fix go (xs : list type) : list type :=
+          match xs with
+          | [] => []
+          | x :: rest =>
+              unfold_type Sigma Delta x :: go rest
+          end
+      in
+      Tm_DeclCombType tn (go lst)
 
   | Tm_Cmd => Tm_Cmd
   | Tm_Elem e => Tm_Elem e
@@ -483,7 +551,17 @@ with unfold_term
               unfold_term Sigma Delta x :: go rest
           end
       in Tm_Prod (go ts)
+  
+  | Tm_Comb lst => 
+      let fix go (xs : list term) : list term :=
+          match xs with
+          | [] => []
+          | x :: rest =>
+              unfold_term Sigma Delta x :: go rest
+          end
+      in Tm_Comb (go lst)
   end.
+
 
 
 Fixpoint unfold_prog_aux
@@ -510,6 +588,17 @@ Fixpoint unfold_prog_aux
              Sigma
              ((X, T') :: Delta)
              rest
+
+  | Tm_DeclCombType tn lst :: rest =>
+      match unfold_type Sigma Delta (Ty_Prod lst) with
+      | Ty_Prod newlst =>
+        Tm_DeclCombType tn newlst
+          :: unfold_prog_aux
+               Sigma
+               Delta
+               rest
+      | _ => (Tm_Error :: rest)
+      end
 
   | tm :: rest =>
       unfold_term Sigma Delta tm
@@ -581,10 +670,23 @@ Compute (eval_prog [] example_good_prog).
 (* Хорошая программа - использование переменной в Tm_Sing *)
 Example example_good_prog2 := [
   Tm_DeclVar "input" (Tm_Elem "bla"); 
-  Tm_DeclVar "myvar" (Tm_Prod [Tm_Elem "0"; Tm_Sing (Tm_Var "input"); Tm_Elem "2"; Tm_Elem "VAL"]);
+  Tm_DeclVar "myvar"
+    (Tm_Prod [Tm_Elem "0"; Tm_Sing (Tm_Var "input"); Tm_Elem "2"; Tm_Elem "VAL"]);
   Tm_Var "myvar"].
 Compute (infer_type_prog [] example_good_prog2).
 Compute (eval_prog [] example_good_prog2).
+
+(* Хорошая программа -  объявление типов-комбинаций *)
+Example example_good_prog3 := [
+  Tm_DeclVar "p" (Tm_Prod [Tm_Elem "Nat"]);
+  Tm_NewTypeAbbr "TP" (Ty_Prod [Ty_Elem "Nat"]);
+  Tm_DeclCombType "NatZero" [Ty_Elem "Zero"; Ty_Abbr "TP"];
+  Tm_DeclVar "n" (Tm_Comb [Tm_Elem "Zero"; Tm_Var "p"]);
+  Tm_DeclVar "s" (Tm_Subst (Ty_Comb "NatZero"));
+  Tm_Prod [Tm_Var "n"; Tm_Var "s"] 
+].
+Compute (infer_type_prog [] example_good_prog3).
+Compute (eval_prog [] example_good_prog3).
 
 (* Плохая программа - undefined variable bad *)
 Example example_bad_prog := (Tm_DeclVar "bed" (Tm_Elem "()") :: Tm_Var "bad" :: []).
