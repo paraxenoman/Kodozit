@@ -306,6 +306,26 @@ Fixpoint infer_list
       end
   end.
 
+Fixpoint comb_type_declared (ctx : type_context) (intn : TypeName) : bool :=
+  match ctx with
+  | [] => false
+  | (BindCombType tn _) :: rest => 
+      if eqb intn tn then 
+        true
+      else 
+        comb_type_declared rest intn
+  | _ :: rest => comb_type_declared rest intn
+  end.
+
+Definition type_abbr_declared (ctx : type_context) (intn : TypeName) : bool :=
+  match type_abbr_lookup ctx intn with
+  | Some _ => true
+  | None => false
+  end.
+
+Definition type_declared (ctx : type_context) (intn : TypeName) : bool :=
+  comb_type_declared ctx intn || type_abbr_declared ctx intn.
+
 (* Функция нормализации для типов *)
 Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : option type :=
     match T with
@@ -352,23 +372,26 @@ with infer_type_term (Γ : type_context) (tm : term) : InferTypeResult :=
           end
       end
   | Tm_NewTypeAbbr x T =>
-      match type_abbr_lookup Γ x with
-      | Some _ => notype
-      | None => 
+      match type_declared Γ x with
+      | true => notype
+      | false => 
         match norm_type Γ T with
         | Some TN => sometype Ty_Cmd (BindTypeAbbr x TN :: Γ)
         | None => notype
         end
       end
   | Tm_DeclCombType tn lst =>
-      match type_comb_lookup Γ lst with
-      | Some _ => notype
-      | None => 
-          match norm_list norm_type Γ lst with
-          | Some nrmlst => sometype Ty_Cmd (BindCombType tn nrmlst :: Γ)
-          | None => notype
-          end
-      end
+      if type_declared Γ tn then
+        notype
+      else
+        match type_comb_lookup Γ lst with
+        | Some _ => notype
+        | None => 
+            match norm_list norm_type Γ lst with
+            | Some nrmlst => sometype Ty_Cmd (BindCombType tn nrmlst :: Γ)
+            | None => notype
+            end
+        end
   | Tm_Cmd => sometype Ty_Cmd Γ
   | Tm_Elem u => sometype (Ty_Elem u) Γ
   | Tm_Prim p => sometype (Ty_Prim p) Γ
@@ -653,19 +676,36 @@ Fixpoint eval_prog_aux (Sigma : eval_context) (prg : prog) : option term :=
 
 (* Основная функция проверки типа программы *)
 Definition infer_type_prog (Γ : type_context) (prg : prog) : option type :=
-  infer_type_prog_aux Γ (unfold_prog prg).
+  infer_type_prog_aux Γ prg.
 
 (* Основная функция вычисления программы *)
 Definition eval_prog (Sigma : eval_context) (prg : prog) : option term :=
-  eval_prog_aux Sigma (unfold_prog prg).
+  eval_prog_aux Sigma prg.
+
+Record Prg_Result := {ty : type; val : term}.
+
+Inductive CompileResult := 
+  | Prg_Ok : Prg_Result -> CompileResult
+  | Prg_Fail : CompileResult.
+
+Definition compile_prog (inprg : prog) : CompileResult :=
+  let prg := unfold_prog inprg
+  in
+  match infer_type_prog [] prg with
+  | Some prg_type => 
+      match eval_prog [] prg with
+      | Some prg_val => Prg_Ok {| ty := prg_type; val := prg_val |}
+      | None => Prg_Fail
+      end
+  | None => Prg_Fail
+  end.
 
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog := [
   Tm_DeclVar "sing" (Tm_Sing (Tm_Prod [Tm_Elem "bla"])); 
   Tm_DeclVar "myvar" (Tm_Prod [Tm_Subst (Ty_Prod [Ty_Elem "one"]); Tm_Elem "0"; Tm_Var "sing"; Tm_Elem "2"; Tm_Elem "VAL"]);
   Tm_Var "myvar"].
-Compute (infer_type_prog [] example_good_prog).
-Compute (eval_prog [] example_good_prog).
+Compute (compile_prog example_good_prog).
 
 (* Хорошая программа - использование переменной в Tm_Sing *)
 Example example_good_prog2 := [
@@ -673,8 +713,7 @@ Example example_good_prog2 := [
   Tm_DeclVar "myvar"
     (Tm_Prod [Tm_Elem "0"; Tm_Sing (Tm_Var "input"); Tm_Elem "2"; Tm_Elem "VAL"]);
   Tm_Var "myvar"].
-Compute (infer_type_prog [] example_good_prog2).
-Compute (eval_prog [] example_good_prog2).
+Compute (compile_prog example_good_prog2).
 
 (* Хорошая программа -  объявление типов-комбинаций *)
 Example example_good_prog3 := [
@@ -685,31 +724,33 @@ Example example_good_prog3 := [
   Tm_DeclVar "s" (Tm_Subst (Ty_Comb "NatZero"));
   Tm_Prod [Tm_Var "n"; Tm_Var "s"] 
 ].
-Compute (infer_type_prog [] example_good_prog3).
-Compute (eval_prog [] example_good_prog3).
+Compute (compile_prog example_good_prog3).
 
 (* Плохая программа - undefined variable bad *)
 Example example_bad_prog := (Tm_DeclVar "bed" (Tm_Elem "()") :: Tm_Var "bad" :: []).
-Compute (infer_type_prog [] example_bad_prog).
-Compute (eval_prog [] example_bad_prog).
+Compute (compile_prog example_bad_prog).
 
 (* Плохая программа - объявление переменных не на топлевеле *)
 Example example_bad_prog2 := [Tm_Prod [Tm_Elem ""; Tm_DeclVar "bed" (Tm_Elem "()")]].
-Compute (infer_type_prog [] example_bad_prog2).
-Compute (eval_prog [] example_bad_prog2).
+Compute (compile_prog example_bad_prog2).
 
 (* Плохая программа - затенение переменных *)
 Example example_bad_prog3 := [Tm_DeclVar "input" (Tm_Elem "bla");
   Tm_DeclVar "input" (Tm_Prod [Tm_Elem "0"; Tm_Elem "2"; Tm_Elem "VAL"]);
   Tm_Var "myvar"].
-Compute (infer_type_prog [] example_bad_prog3).
-Compute (eval_prog [] example_bad_prog3).
+Compute (compile_prog example_bad_prog3).
 
 (* Плохая программа - прямое использование Ty_Cmd *)
 Example example_bad_prog4 : prog := [Tm_Subst Ty_Cmd].
-Compute (infer_type_prog [] example_bad_prog4).
-Compute (eval_prog [] example_bad_prog4).
+Compute (compile_prog example_bad_prog4).
 
-
+(* Плохая программа - объявление типов и их синонимов с занятыми именами *)
+Example example_bad_prog5 : prog := [
+  Tm_NewTypeAbbr "NatZero" (Ty_Prod [Ty_Elem "Nat"]);
+  Tm_DeclCombType "NatZero" [Ty_Elem "Zero"; (Ty_Prod [Ty_Elem "Nat"])];
+  Tm_DeclVar "p" (Tm_Prod [Tm_Elem "Nat"]);
+  Tm_Var "p"
+].
+Compute (compile_prog example_bad_prog5).
 
 
