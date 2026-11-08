@@ -627,54 +627,42 @@ Definition unfold_prog (prg : prog) : prog :=
   unfold_prog_aux [] [] prg.
 
 (* Вспомогательная функция проверки типа программы *)
-Fixpoint infer_type_prog_aux (Γ : type_context) (prg : prog) : option type :=
-  let fix f g p {struct p} := match p with
-  | [] => TypeCtx Ty_Unit g
-  | [t] => infer_type_term g t
+Fixpoint infer_type_prog_aux (Γ : type_context) (prg : prog) : InferTypeResult :=
+  match prg with
+  | [] => TypeCtx Ty_Unit Γ
+  | [t] => infer_type_term Γ t
   | t :: rest =>
-      match infer_type_term g t with
-      | TypeCtx _ Γ2 =>
-           match infer_type_prog_aux Γ2 rest with
-           | Some tp => TypeCtx tp Γ2
-           | None => FailType
-           end
-      | FailType => notype
+      match infer_type_term Γ t with
+      | TypeCtx _ Γ' => infer_type_prog_aux Γ' rest
+      | FailType => FailType
       end
-  end
-  in
-  match f Γ prg with
-  | TypeCtx t _ => Some t
-  | _ => None
   end.
 
 (* Вспомогательная функция вычисления программы *)
-Fixpoint eval_prog_aux (Sigma : eval_context) (prg : prog) : option term :=
-  let fix f s p {struct p} := match p with
-  | [] => ValCtx Tm_Unit s
-  | [t] => eval_term s t
+Fixpoint eval_prog_aux (Sigma : eval_context) (prg : prog) : EvalResult :=
+  match prg with
+  | [] => ValCtx Tm_Unit Sigma
+  | [t] => eval_term Sigma t
   | t :: rest =>
-      match eval_term s t with
-      | ValCtx _ s1 => 
-          match eval_prog_aux s1 rest with
-          | Some tm => ValCtx tm s1
-          | None => FailValue
-          end
-      | FailValue => novalue
+      match eval_term Sigma t with
+      | ValCtx _ Sigma' => eval_prog_aux Sigma' rest
+      | FailValue => FailValue
       end
-  end
-  in
-  match f Sigma prg with
-  | ValCtx t _ => Some t
-  | _ => None
   end.
 
 (* Основная функция проверки типа программы *)
 Definition infer_type_prog (Γ : type_context) (prg : prog) : option type :=
-  infer_type_prog_aux Γ prg.
+  match infer_type_prog_aux Γ prg with
+  | TypeCtx T _ => Some T
+  | FailType => None
+  end.
 
 (* Основная функция вычисления программы *)
 Definition eval_prog (Sigma : eval_context) (prg : prog) : option term :=
-  eval_prog_aux Sigma prg.
+  match eval_prog_aux Sigma prg with
+  | ValCtx v _ => Some v
+  | FailValue => None
+  end.
 
 Record Prg_Result := {ty : type; val : term}.
 
