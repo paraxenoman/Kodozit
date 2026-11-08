@@ -34,32 +34,63 @@ Definition prim_beq (p1 p2 : prim) : bool :=
 
 (* Синтаксис типов  *)
 Inductive type : Type :=
-  | Ty_Error : type
-  | Ty_Abbr : TypeName -> type
-  | Ty_Cmd : type
-  | Ty_Elem : elem -> type
-  | Ty_Prim : prim -> type
-  | Ty_Sing : term -> type
-  | Ty_TyRep : type -> type
-  | Ty_Prod : list type -> type
-  | Ty_Comb : TypeName -> type
-with term : Type :=
-(* Синтаксис термов  *)
-  | Tm_Error : term
-  | Tm_Var : VarName -> term
-  | Tm_DeclVar : VarName -> term -> term
-  | Tm_NewTypeAbbr : TypeName -> type -> term
-  | Tm_DeclCombType : TypeName -> list type -> term
-  | Tm_Cmd : term
-  | Tm_Elem : elem -> term
-  | Tm_Prim : prim -> term
-  | Tm_Sing : term -> term
-  | Tm_TyRep : type -> term
-  | Tm_Prod : list term -> term
-  | Tm_Comb : list term -> term.
+  | T_Error : type
+  | T_Abbr : TypeName -> type
+  | T_Elem : elem -> type
+  | T_Prim : prim -> type
+  | T_Sing : value -> type
+  | T_TRep : type -> type
+  | T_Prod : list type -> type
+  | T_Comb : TypeName -> type
+with expr : Type :=
+(* Синтаксис выражений  *)
+  | E_Error : expr
+  | E_Var : VarName -> expr
+  | E_Elem : elem -> expr
+  | E_Prim : prim -> expr
+  | E_Sing : expr -> expr
+  | E_TRep : type -> expr
+  | E_Prod : list expr -> expr
+  | E_Comb : list expr -> expr
+(* Синтаксис значений *)
+with value : Type :=
+  | V_Elem : elem -> value
+  | V_Prim : prim -> value
+  | V_Sing : value -> value
+  | V_TRep : type -> value
+  | V_Prod : list value -> value
+  | V_Comb : list value -> value.
 
-Notation Tm_Unit := (Tm_Prod []).
-Notation Ty_Unit := (Ty_Prod []).
+(* Синтаксис комманд *)
+Inductive command : Type :=
+  | C_DeclVar : VarName -> expr -> command
+  | C_NewTypeAbbr : TypeName -> type -> command
+  | C_DeclCombType : TypeName -> list type -> command
+  | C_Eval : expr -> command.
+
+Inductive error : Type :=
+  | Err_UnboundVar : VarName -> error
+  | Err_UnboundType : TypeName -> error
+  | Err_DuplicateVar : VarName -> error
+  | Err_DuplicateType : TypeName -> error
+  | Err_DuplicateCombSignature : list type -> error
+  | Err_UnknownCombSignature : error
+  | Err_InvalidSingleton : error
+  | Err_InvalidType : error
+  | Err_TypeMismatch : error
+  | Err_UnexpectedVar : VarName -> error
+  | Err_NoResult : error.
+
+Inductive result (A : Type) : Type :=
+  | Ok : A -> result A
+  | Err : error -> result A.
+Arguments Ok {A} _.
+Arguments Err {A} _.
+
+
+Notation V_Unit := (V_Prod []).
+Notation E_Unit := (E_Prod []).
+Notation T_Unit := (T_Prod []).
 
 Inductive TypeBinding : Type :=
   | BindTypeAbbr : TypeName -> type -> TypeBinding
@@ -68,13 +99,6 @@ Inductive TypeBinding : Type :=
 
 (* Контекст типизации *)
 Definition type_context := list TypeBinding.
-
-Inductive InferTypeResult : Type :=
-  | TypeCtx : type -> type_context -> InferTypeResult
-  | FailType : InferTypeResult.
-
-Definition sometype t Γ := TypeCtx t Γ.
-Definition notype := FailType.
 
 (* Функция поиска типа по его синониму (аббревиатуре) *)
 Fixpoint type_abbr_lookup (Γ : type_context) (X : TypeName) : option type :=
@@ -101,13 +125,13 @@ Fixpoint var_type_lookup (Γ : type_context) (x : VarName) : option type :=
   end.
 
 Inductive VarValueBinding : Type :=
-  | BindVarValue : VarName -> term -> VarValueBinding.
+  | BindVarValue : VarName -> value -> VarValueBinding.
 
 (* Контекст вычислений *)
 Definition eval_context := list VarValueBinding.
 
 (* Функция поиска значения переменной в контексте вычислений *)
-Fixpoint var_value_lookup (Sigma : eval_context) (x : VarName) : option term :=
+Fixpoint var_value_lookup (Sigma : eval_context) (x : VarName) : option value :=
   match Sigma with
   | [] => None
   | (BindVarValue y v1) :: rest => 
@@ -117,143 +141,134 @@ Fixpoint var_value_lookup (Sigma : eval_context) (x : VarName) : option term :=
         var_value_lookup rest x
   end.
 
-Inductive EvalResult : Type :=
-  | ValCtx : term -> eval_context -> EvalResult
-  | FailValue : EvalResult.
-  
-Definition somevalue term Sigma := ValCtx term Sigma.
-Definition novalue := FailValue.
-
-Fixpoint eval_term_list 
-        (f : eval_context -> term -> EvalResult) 
-        (Sigma : eval_context)
-        (ts : list term) 
-        : option (list term) :=
+Fixpoint eval_expr_list 
+        (f : eval_context -> expr -> result value) 
+        (ctx : eval_context)
+        (ts : list expr) 
+        : result (list value) :=
   match ts with
-  | [] => Some []
+  | [] => Ok []
   | t :: rest =>
-      match f Sigma t with
-      | ValCtx Tm_Cmd _ => None
-      | ValCtx v ctx => 
-          match (eval_term_list f ctx rest) with
-          | Some lt => Some (v :: lt)
-          | _ => None
+      match f ctx t with
+      | Ok v => 
+          match (eval_expr_list f ctx rest) with
+          | Ok lt => Ok (v :: lt)
+          | Err e => Err e
           end
-      | _ => None
+      | Err e => Err e
       end
   end.
 
 Fixpoint norm_list 
-      (f : type_context -> type -> option type) 
+      (f : type_context -> type -> result type) 
       (Γ : type_context) 
       (ts : list type) 
-      : option (list type) :=
+      : result (list type) :=
   match ts with
-  | [] => Some []
+  | [] => Ok []
   | t :: rest =>
     match f Γ t with
-    | Some nrmpt =>
-        match nrmpt with
-        | Ty_Cmd => None
-        | _ => 
-            match norm_list f Γ rest with
-            | Some nrmpts => Some (nrmpt :: nrmpts)
-            | None => None
-            end
+    | Ok nrmpt =>
+        match norm_list f Γ rest with
+        | Ok nrmpts => Ok (nrmpt :: nrmpts)
+        | Err e => Err e
         end
-    | None => None
+    | Err e => Err e
     end
   end.
 
 (* Функция вычисления термов *) 
-Fixpoint eval_term (Sigma : eval_context) (tm : term) : EvalResult :=
+Fixpoint eval_expr (Sigma : eval_context) (tm : expr) : result value :=
   match tm with
-  | Tm_Var x =>
+  | E_Var x =>
       match var_value_lookup Sigma x with
-      | Some v => somevalue v Sigma
-      | None => novalue
+      | Some v => Ok v
+      | None => Err (Err_UnboundVar x)
       end
-  | Tm_DeclVar x v =>
-      match var_value_lookup Sigma x with
-      | Some _ => novalue
-      | None => 
-          match eval_term Sigma v with
-          | ValCtx Tm_Cmd _ => novalue
-          | ValCtx v1 Sigma1 => somevalue Tm_Cmd (BindVarValue x v1 :: Sigma1)
-          | FailValue => novalue
-          end
+  | E_Elem e => Ok (V_Elem e)
+  | E_Prim p => Ok (V_Prim p)
+  | E_Sing s =>
+      match eval_expr Sigma s with
+      | Ok v => Ok (V_Sing v)
+      | Err e => Err e
       end
-  | Tm_NewTypeAbbr _ _ => somevalue Tm_Cmd Sigma
-  | Tm_DeclCombType _ _ => somevalue Tm_Cmd Sigma
-  | Tm_Cmd => somevalue Tm_Cmd Sigma 
-  | Tm_Elem e => somevalue (Tm_Elem e) Sigma
-  | Tm_Prim p => somevalue (Tm_Prim p) Sigma
-  | Tm_Sing s =>
-    match s with
-    | Tm_Var _ => novalue
-    | _ =>
-      match eval_term Sigma s with
-      | ValCtx Tm_Cmd _ => novalue
-      | ValCtx v _ => somevalue (Tm_Sing v) Sigma
-      | FailValue => novalue
-      end
-    end
-  | Tm_TyRep Ty_Cmd => novalue
-  | Tm_TyRep T => somevalue (Tm_TyRep T) Sigma
-  | Tm_Prod p =>
+  | E_TRep T => Ok (V_TRep T)
+  | E_Prod p =>
       match p with
-      | [] => somevalue Tm_Unit Sigma
-      | [x] => 
-          match eval_term Sigma x with
-          | ValCtx Tm_Cmd _ => novalue
-          | v => v
-          end
+      | [] => Ok V_Unit
+      | [x] => eval_expr Sigma x
       | _ =>
-          match (eval_term_list eval_term Sigma p) with
-          | Some l => somevalue (Tm_Prod l) Sigma
-          | _ => novalue
+          match (eval_expr_list eval_expr Sigma p) with
+          | Ok l => Ok (V_Prod l)
+          | Err e => Err e
           end
       end
-  | Tm_Error => novalue
-  | Tm_Comb lst =>
-      match (eval_term_list eval_term Sigma lst) with
-      | Some l => somevalue (Tm_Comb l) Sigma
-      | _ => novalue
+  | E_Error => Err Err_NoResult
+  | E_Comb lst =>
+      match (eval_expr_list eval_expr Sigma lst) with
+      | Ok l => Ok (V_Comb l)
+      | Err e => Err e
       end
   end.
 
-(* Функция булевого равенства для термов без приведения в номальную форму *)
-Fixpoint term_beq (it1 it2 : term) : bool :=
-      match it1, it2 with
-      | Tm_Var vn1, Tm_Var vn2 => eqb vn1 vn2
-      | Tm_Elem e1, Tm_Elem e2 => eqb e1 e2
-      | Tm_Prim p1, Tm_Prim p2 => prim_beq p1 p2
-      | Tm_Sing tm1, Tm_Sing tm2 => term_beq tm1 tm2
-      | Tm_TyRep tp1, Tm_TyRep tp2 => type_beq tp1 tp2
-      | Tm_Prod l1, Tm_Prod l2 => list_eqb term_beq l1 l2
-      | Tm_Comb l1, Tm_Comb l2 => list_eqb term_beq l1 l2
-      | _, _ => false
-      end
-(* Функция булевого равенства для типов без нормализации *)
-with type_beq (it1 it2 : type) : bool := 
-      match it1, it2 with
-      | Ty_Abbr vn1, Ty_Abbr vn2 => eqb vn1 vn2
-      | Ty_Elem e1, Ty_Elem e2 => eqb e1 e2
-      | Ty_Prim p1, Ty_Prim p2 => prim_beq p1 p2
-      | Ty_Sing tm1, Ty_Sing tm2 => term_beq tm1 tm2
-      | Ty_TyRep tp1, Ty_TyRep tp2 => type_beq tp1 tp2
-      | Ty_Prod l1, Ty_Prod l2 => list_eqb type_beq l1 l2
-      | Ty_Comb vn1, Ty_Comb vn2 => eqb vn1 vn2
-      | _, _ => false
-      end.
 
-(* Функция булевого равенства для нормальных форм термов *)
-Definition norm_term_beq (f : eval_context -> term -> EvalResult) (ctx : eval_context) (it1 it2 : term) : bool :=
+Record machine_state := {
+  ms_type_ctx : type_context;
+  ms_eval_ctx : eval_context;
+  ms_last_type : option type;
+  ms_last_value : option value
+}.
+
+Definition initial_state : machine_state :=
+  {| ms_type_ctx := [];
+     ms_eval_ctx := [];
+     ms_last_type := None;
+     ms_last_value := None |}.
+
+(* Функция булевого равенства для типов без нормализации *)
+Fixpoint type_beq (it1 it2 : type) : bool := 
+  match it1, it2 with
+  | T_Abbr vn1, T_Abbr vn2 => eqb vn1 vn2
+  | T_Elem e1, T_Elem e2 => eqb e1 e2
+  | T_Prim p1, T_Prim p2 => prim_beq p1 p2
+  | T_Sing tm1, T_Sing tm2 => value_beq tm1 tm2
+  | T_TRep tp1, T_TRep tp2 => type_beq tp1 tp2
+  | T_Prod l1, T_Prod l2 => list_eqb type_beq l1 l2
+  | T_Comb vn1, T_Comb vn2 => eqb vn1 vn2
+  | _, _ => false
+  end
+(* Функция булевого равенства для значений *)
+with value_beq (it1 it2 : value) : bool :=
+  match it1, it2 with
+  | V_Elem e1, V_Elem e2 => eqb e1 e2
+  | V_Prim p1, V_Prim p2 => prim_beq p1 p2
+  | V_Sing tm1, V_Sing tm2 => value_beq tm1 tm2
+  | V_TRep tp1, V_TRep tp2 => type_beq tp1 tp2
+  | V_Prod l1, V_Prod l2 => list_eqb value_beq l1 l2
+  | V_Comb l1, V_Comb l2 => list_eqb value_beq l1 l2
+  | _, _ => false
+  end.
+
+(* Функция булевого равенства для выражений *)
+Fixpoint expr_beq (it1 it2 : expr) : bool :=
+  match it1, it2 with
+  | E_Var vn1, E_Var vn2 => eqb vn1 vn2
+  | E_Elem e1, E_Elem e2 => eqb e1 e2
+  | E_Prim p1, E_Prim p2 => prim_beq p1 p2
+  | E_Sing tm1, E_Sing tm2 => expr_beq tm1 tm2
+  | E_TRep tp1, E_TRep tp2 => type_beq tp1 tp2
+  | E_Prod l1, E_Prod l2 => list_eqb expr_beq l1 l2
+  | E_Comb l1, E_Comb l2 => list_eqb expr_beq l1 l2
+  | _, _ => false
+  end.
+
+(* Функция булевого равенства для значений *)
+Definition norm_expr_beq (f : eval_context -> expr -> result value) (ctx : eval_context) (it1 it2 : expr) : bool :=
   let mnt1 := f ctx it1 
     in let mnt2 := f ctx it2
       in
         match mnt1, mnt2 with
-        | ValCtx nt1 _, ValCtx nt2 _ => term_beq nt1 nt2
+        | Ok v1, Ok v2 => value_beq v1 v2
         | _, _ => false
         end.
         
@@ -271,12 +286,12 @@ Definition norm_type_beq (f : type_context -> type -> option type) (ctx : type_c
 Fixpoint type_comb_lookup 
       (Γ : type_context) 
       (lst : list type) 
-      {struct Γ} : option type :=
+      {struct Γ} : option TypeName :=
   match Γ with
   | [] => None
   | (BindCombType TN LST) :: rest => 
       if list_eqb type_beq lst LST then 
-        Some (Ty_Comb TN)
+        Some TN
       else 
         type_comb_lookup rest lst
   | _ :: rest => type_comb_lookup rest lst
@@ -284,25 +299,22 @@ Fixpoint type_comb_lookup
 
 (* Вспомогательная функция для вывода типов для списка термов *)
 Fixpoint infer_list 
-          (f : type_context -> term -> InferTypeResult)
+          {A : Type} 
+          (f : type_context -> A -> result type)
           (Γ : type_context)
-          (ts : list term)
+          (ts : list A)
           {struct ts}
-          : option (list type) :=
+          : result (list type) :=
   match ts with
-  | [] => Some []
+  | [] => Ok []
   | t :: rest =>
       match f Γ t with
-      | TypeCtx T _ =>
-          match T with
-          | Ty_Cmd => None
-          | _ => 
-              match infer_list f Γ rest with
-              | Some Ts => Some (T :: Ts)
-              | None => None
-              end
+      | Ok T =>
+          match infer_list f Γ rest with
+          | Ok Ts => Ok (T :: Ts)
+          | Err e => Err e
           end
-      | FailType => None
+      | Err e => Err e
       end
   end.
 
@@ -327,123 +339,175 @@ Definition type_declared (ctx : type_context) (intn : TypeName) : bool :=
   comb_type_declared ctx intn || type_abbr_declared ctx intn.
 
 (* Функция нормализации для типов *)
-Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : option type :=
+Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : result type :=
     match T with
-    | Ty_Error => None
-    | Ty_Abbr tn => type_abbr_lookup Γ tn
-    | Ty_Sing tm =>
-      match infer_type_term Γ tm with
-      | FailType => None
-      | TypeCtx _ _ => Some (Ty_Sing tm)
+    | T_Error => Err Err_NoResult
+    | T_Abbr tn => 
+        if type_abbr_lookup Γ tn then 
+          Ok (T_Abbr tn) 
+        else 
+          Err (Err_UnboundType tn)
+    | T_Sing tm =>
+      match infer_type_value Γ tm with
+      | Err e => Err e
+      | Ok _ => Ok (T_Sing tm)
       end
-    | Ty_TyRep ty => 
+    | T_TRep ty => 
         match norm_type Γ ty with
-        | None => None
-        | Some nrmty => Some (Ty_TyRep nrmty)
+        | Err e => Err e
+        | Ok nrmty => Ok (T_TRep nrmty)
         end
-    | Ty_Prod [x] => norm_type Γ x
-    | Ty_Prod (p1 :: ps) =>
+    | T_Prod [x] => norm_type Γ x
+    | T_Prod (p1 :: ps) =>
         match norm_list norm_type Γ (p1 :: ps) with 
-        | Some P => Some (Ty_Prod P) 
-        | None => None
+        | Ok P => Ok (T_Prod P) 
+        | Err e => Err e
         end
-    | _ => Some T
+    | _ => Ok T
     end
 (* Функция вывода и проверки типов *)
-with infer_type_term (Γ : type_context) (tm : term) : InferTypeResult :=
+with infer_type_value (Γ : type_context) (tm : value) : result type :=
   match tm with
-  | Tm_Error => FailType
-  | Tm_Var x => 
-      match var_type_lookup Γ x with
-      | Some T => sometype T Γ
-      | None => notype
+  | V_Elem u => Ok (T_Elem u)
+  | V_Prim p => Ok (T_Prim p)
+  | V_Sing s =>
+      match infer_type_value Γ s with
+      | Ok T => Ok (T_Sing s)
+      | Err e => Err e
       end
-  | Tm_DeclVar x tm =>
-      match var_type_lookup Γ x with
-      | Some _ => notype
-      | None =>
-          match infer_type_term Γ tm with
-          | FailType => notype
-          | TypeCtx T Γ2 => 
-              match T with
-              | Ty_Cmd => notype
-              | _ => sometype Ty_Cmd (BindVarType x T :: Γ2)
-              end
-          end
+  | V_TRep T => 
+      match norm_type Γ T with 
+      | Ok NT => Ok (T_TRep NT)
+      | Err e => Err e
       end
-  | Tm_NewTypeAbbr x T =>
-      match type_declared Γ x with
-      | true => notype
-      | false => 
-        match norm_type Γ T with
-        | Some TN => sometype Ty_Cmd (BindTypeAbbr x TN :: Γ)
-        | None => notype
-        end
+  | V_Prod [] => Ok T_Unit
+  | V_Prod [x] => 
+      match infer_type_value Γ x with
+      | Ok T => Ok T
+      | Err e => Err e
       end
-  | Tm_DeclCombType tn lst =>
-      if type_declared Γ tn then
-        notype
-      else
-        match type_comb_lookup Γ lst with
-        | Some _ => notype
-        | None => 
-            match norm_list norm_type Γ lst with
-            | Some nrmlst => sometype Ty_Cmd (BindCombType tn nrmlst :: Γ)
-            | None => notype
-            end
-        end
-  | Tm_Cmd => sometype Ty_Cmd Γ
-  | Tm_Elem u => sometype (Ty_Elem u) Γ
-  | Tm_Prim p => sometype (Ty_Prim p) Γ
-  | Tm_Sing s =>
-    match s with
-    | Tm_Var _ => notype
-    | _ =>
-      match infer_type_term Γ s with
-      | TypeCtx T _ => 
-          match T with
-          | Ty_Cmd => notype
-          | _ => sometype (Ty_Sing s) Γ
-          end
-      | FailType => notype
+  | V_Prod (p1 :: ps) =>
+      match infer_list infer_type_value Γ (p1 :: ps) with
+      | Ok P => Ok (T_Prod P) 
+      | Err e => Err e
       end
-    end
-  | Tm_TyRep T => 
-      match T with
-      | Ty_Cmd => notype
-      | _ => 
-        match norm_type Γ T with 
-        | Some NT => sometype (Ty_TyRep NT) Γ
-        | None => notype
-        end
-      end
-  | Tm_Prod [] => sometype Ty_Unit Γ
-  | Tm_Prod [x] => 
-      match infer_type_term Γ x with
-      | TypeCtx T _ => 
-          match T with
-          | Ty_Cmd => notype
-          | _ => sometype T Γ
-          end
-      | FailType => notype
-      end
-  | Tm_Prod (p1 :: ps) =>
-      match infer_list infer_type_term Γ (p1 :: ps) with
-      | Some P => sometype (Ty_Prod P) Γ 
-      | None => FailType 
-      end
-  | Tm_Comb lst =>
-      match infer_list infer_type_term Γ lst with
-      | Some wtlst => 
+  | V_Comb lst =>
+      match infer_list infer_type_value Γ lst with
+      | Ok wtlst => 
           match type_comb_lookup Γ wtlst with
-          | Some (Ty_Comb TN) => sometype (Ty_Comb TN) Γ
-          | _ => FailType
+          | Some TN => Ok (T_Comb TN)
+          | None => Err (Err_UnknownCombSignature)
           end
-      | None => FailType 
+      | Err e => Err e
       end 
   end.
 
-Definition prog : Type := list term.
+Fixpoint infer_type_expr (Γ : type_context) (tm : expr) : result type :=
+  match tm with
+  | E_Error => Err Err_NoResult 
+  | E_Var x => 
+      match var_type_lookup Γ x with
+      | Some T => Ok T
+      | None => Err (Err_UnboundVar x)
+      end 
+  | E_Elem u => Ok (T_Elem u)
+  | E_Prim p => Ok (T_Prim p)
+  | E_Sing s =>
+      match s with
+      | E_Var x => Err (Err_UnexpectedVar x)
+      | e => infer_type_expr Γ e
+      end
+  | E_TRep T => 
+      match norm_type Γ T with 
+      | Ok NT => Ok (T_TRep NT)
+      | Err e => Err e
+      end
+  | E_Prod [] => Ok T_Unit
+  | E_Prod [x] => 
+      match infer_type_expr Γ x with
+      | Ok T => Ok T
+      | Err e => Err e
+      end
+  | E_Prod (p1 :: ps) =>
+      match infer_list infer_type_expr Γ (p1 :: ps) with
+      | Ok P => Ok (T_Prod P) 
+      | Err e => Err e
+      end
+  | E_Comb lst =>
+      match infer_list infer_type_expr Γ lst with
+      | Ok wtlst => 
+          match type_comb_lookup Γ wtlst with
+          | Some TN => Ok (T_Comb TN)
+          | None => Err (Err_UnknownCombSignature)
+          end
+      | Err e => Err e
+      end 
+  end.
+
+Definition exec_command (st : machine_state) (cmd : command) : result machine_state :=
+  let Γ := st.(ms_type_ctx) in
+  let Sigma := st.(ms_eval_ctx) in
+  match cmd with
+  | C_DeclVar x inex =>
+      match var_value_lookup Sigma x, var_type_lookup Γ x with
+      | None, None =>
+          match eval_expr Sigma inex with
+          | Ok ex => 
+              match infer_type_value Γ ex, (Ok ex) with
+              | Ok t, Ok v => Ok {| 
+                  ms_type_ctx := (BindVarType x t :: Γ);
+                  ms_eval_ctx := (BindVarValue x v :: Sigma);
+                  ms_last_type := st.(ms_last_type);
+                  ms_last_value := st.(ms_last_value) |}
+              | Err er, _ => Err er
+              | _, Err er => Err er
+              end
+          | Err e => Err e
+          end
+      | _, _ => Err (Err_DuplicateVar x)
+      end
+  | C_NewTypeAbbr x T => 
+      match type_declared Γ x with
+      | true => Err (Err_DuplicateType x)
+      | false => 
+        match norm_type Γ T with
+        | Ok TN => Ok {| 
+              ms_type_ctx := (BindTypeAbbr x TN :: Γ);
+              ms_eval_ctx := Sigma;
+              ms_last_type := st.(ms_last_type);
+              ms_last_value := st.(ms_last_value) |}
+        | Err e => Err e
+        end
+      end
+  | C_DeclCombType tn lst => 
+      if type_declared Γ tn then
+        Err (Err_DuplicateType tn)
+      else
+        match type_comb_lookup Γ lst with
+        | Some _ => Err (Err_DuplicateCombSignature lst)
+        | None => 
+            match norm_list norm_type Γ lst with
+            | Ok nrmlst => Ok {| 
+              ms_type_ctx := (BindCombType tn nrmlst :: Γ);
+              ms_eval_ctx := Sigma;
+              ms_last_type := st.(ms_last_type);
+              ms_last_value := st.(ms_last_value) |}
+            | Err e => Err e
+            end
+        end
+  | C_Eval e =>
+      match infer_type_expr Γ e, eval_expr Sigma e with
+      | Ok T, Ok v => Ok {| 
+          ms_type_ctx := Γ;
+          ms_eval_ctx := Sigma;
+          ms_last_type := Some T;
+          ms_last_value := Some v |}
+      | Err er, _ => Err er
+      | _, Err er => Err er
+      end
+  end.
+
+Definition prog : Type := list command.
 
 (*
   Окружение уже раскрытых определений типов.
@@ -453,8 +517,8 @@ Definition type_def_context : Type :=
   list (TypeName * type).
 
 (* Окружение уже раскрытых определений термов. *)
-Definition term_def_context : Type :=
-  list (VarName * term).
+Definition expr_def_context : Type :=
+  list (VarName * expr).
 
 
 Fixpoint lookup_type_def
@@ -470,121 +534,97 @@ Fixpoint lookup_type_def
   end.
 
 
-Fixpoint lookup_term_def
-    (Sigma : term_def_context)
+Fixpoint lookup_expr_def
+    (Sigma : expr_def_context)
     (x : VarName)
-  : option term :=
+  : option expr :=
   match Sigma with
   | [] => None
   | (y, tm) :: rest =>
       if eqb x y
       then Some tm
-      else lookup_term_def rest x
+      else lookup_expr_def rest x
   end.
 
 Fixpoint unfold_type
-    (Sigma : term_def_context)
+    (Sigma : expr_def_context)
     (Delta : type_def_context)
     (T : type) {struct T}
   : type :=
   match T with
-  | Ty_Error => Ty_Error
-  | Ty_Abbr X =>
+  | T_Error => T_Error
+  | T_Abbr X =>
       match lookup_type_def Delta X with
       | Some T' => T'
-      | None => Ty_Error
+      | None => T_Error
+      end
+  | T_Elem e => T_Elem e
+  | T_Prim p => T_Prim p
+
+  | T_Sing tm => T_Sing tm
+
+  | T_TRep T1 =>
+      match norm_type [] (T_TRep (unfold_type Sigma Delta T1)) with
+      | Ok ntp => ntp
+      | _ => T_Error
       end
 
-  | Ty_Cmd => Ty_Cmd
-  | Ty_Elem e => Ty_Elem e
-  | Ty_Prim p => Ty_Prim p
-
-  | Ty_Sing tm =>
-      Ty_Sing (unfold_term Sigma Delta tm)
-
-  | Ty_TyRep T1 =>
-      match norm_type [] (Ty_TyRep (unfold_type Sigma Delta T1)) with
-      | Some ntp => ntp
-      | _ => Ty_Error
-      end
-
-  | Ty_Prod Ts =>
+  | T_Prod Ts =>
       let fix go (xs : list type) : list type :=
           match xs with
           | [] => []
           | x :: rest =>
               unfold_type Sigma Delta x :: go rest
           end
-      in Ty_Prod (go Ts)
-  | Ty_Comb tn => Ty_Comb tn
-  end
-
-with unfold_term
-    (Sigma : term_def_context)
+      in T_Prod (go Ts)
+  | T_Comb tn => T_Comb tn
+  end.
+ 
+Fixpoint unfold_expr
+    (Sigma : expr_def_context)
     (Delta : type_def_context)
-    (tm : term) {struct tm}
-  : term :=
+    (tm : expr) {struct tm}
+  : expr :=
   match tm with
-  | Tm_Error => Tm_Error
-  | Tm_Var x =>
-      match lookup_term_def Sigma x with
+  | E_Error => E_Error
+  | E_Var x =>
+      match lookup_expr_def Sigma x with
       | Some tm' => tm'
-      | None => Tm_Error
+      | None => E_Error
       end
-
-  | Tm_DeclVar x rhs =>
-      Tm_DeclVar x (unfold_term Sigma Delta rhs)
-
-  | Tm_NewTypeAbbr X T =>
-      Tm_NewTypeAbbr X (unfold_type Sigma Delta T)
       
-  | Tm_DeclCombType tn lst =>
-      let fix go (xs : list type) : list type :=
-          match xs with
-          | [] => []
-          | x :: rest =>
-              unfold_type Sigma Delta x :: go rest
-          end
-      in
-      Tm_DeclCombType tn (go lst)
+  | E_Elem e => E_Elem e
+  | E_Prim p => E_Prim p
 
-  | Tm_Cmd => Tm_Cmd
-  | Tm_Elem e => Tm_Elem e
-  | Tm_Prim p => Tm_Prim p
+  | E_Sing s => E_Sing (unfold_expr Sigma Delta s)
 
-  | Tm_Sing s =>
-      match eval_term [] (Tm_Sing (unfold_term Sigma Delta s)) with
-      | ValCtx ntm _ => ntm
-      | _ => Tm_Error
-      end
-
-  | Tm_TyRep T =>
+  | E_TRep T =>
       match norm_type [] (unfold_type Sigma Delta T) with
-      | Some ntp => Tm_TyRep ntp
-      | _ => Tm_Error
+      | Ok ntp => E_TRep ntp
+      | _ => E_Error
       end
 
-  | Tm_Prod ts =>
-      let fix go (xs : list term) : list term :=
+  | E_Prod ts =>
+      let fix go (xs : list expr) : list expr :=
           match xs with
           | [] => []
           | x :: rest =>
-              unfold_term Sigma Delta x :: go rest
+              unfold_expr Sigma Delta x :: go rest
           end
-      in Tm_Prod (go ts)
+      in E_Prod (go ts)
   
-  | Tm_Comb lst => 
-      let fix go (xs : list term) : list term :=
+  | E_Comb lst => 
+      let fix go (xs : list expr) : list expr :=
           match xs with
           | [] => []
           | x :: rest =>
-              unfold_term Sigma Delta x :: go rest
+              unfold_expr Sigma Delta x :: go rest
           end
-      in Tm_Comb (go lst)
+      in E_Comb (go lst)
   end.
 
 Fixpoint unfold_prog_aux
-    (Sigma : term_def_context)
+    (Sigma : expr_def_context)
     (Delta : type_def_context)
     (prg : prog) {struct prg}
   : prog :=
@@ -592,147 +632,107 @@ Fixpoint unfold_prog_aux
   | [] =>
       []
 
-  | Tm_DeclVar x rhs :: rest =>
-      let rhs' := unfold_term Sigma Delta rhs in
+  | C_DeclVar x rhs :: rest =>
+      let rhs' := unfold_expr Sigma Delta rhs in
         unfold_prog_aux
          ((x, rhs') :: Sigma)
          Delta
          rest
 
-  | Tm_NewTypeAbbr X T :: rest =>
+  | C_NewTypeAbbr X T :: rest =>
       let T' := unfold_type Sigma Delta T in
-      Tm_NewTypeAbbr X T'
+      C_NewTypeAbbr X T'
         :: unfold_prog_aux
              Sigma
              ((X, T') :: Delta)
              rest
 
-  | Tm_DeclCombType tn lst :: rest =>
-      match unfold_type Sigma Delta (Ty_Prod lst) with
-      | Ty_Prod newlst =>
-        Tm_DeclCombType tn newlst
+  | C_DeclCombType tn lst :: rest =>
+      match unfold_type Sigma Delta (T_Prod lst) with
+      | T_Prod newlst =>
+        C_DeclCombType tn newlst
           :: unfold_prog_aux
                Sigma
                Delta
                rest
-      | _ => (Tm_Error :: rest)
+      | _ => rest
       end
 
-  | tm :: rest =>
-      unfold_term Sigma Delta tm
-        :: unfold_prog_aux Sigma Delta rest
+  | C_Eval e :: rest => 
+      let e' := unfold_expr Sigma Delta e in 
+      C_Eval e' :: unfold_prog_aux Sigma Delta rest
   end.
 
 Definition unfold_prog (prg : prog) : prog :=
   unfold_prog_aux [] [] prg.
 
-(* Вспомогательная функция проверки типа программы *)
-Fixpoint infer_type_prog_aux (Γ : type_context) (prg : prog) : InferTypeResult :=
-  match prg with
-  | [] => TypeCtx Ty_Unit Γ
-  | [t] => infer_type_term Γ t
-  | t :: rest =>
-      match infer_type_term Γ t with
-      | TypeCtx _ Γ' => infer_type_prog_aux Γ' rest
-      | FailType => FailType
-      end
+Record Prg_Result := {ty : type; val : expr}.
+
+Fixpoint compile_prog_aux (st : machine_state) (inprg : prog) {struct inprg} : result machine_state :=
+  match inprg with
+  | [] => Ok {| 
+          ms_type_ctx := st.(ms_type_ctx);
+          ms_eval_ctx := st.(ms_eval_ctx);
+          ms_last_type := st.(ms_last_type);
+          ms_last_value := st.(ms_last_value) |}
+  | [c] => exec_command st c
+  | curcmd :: rest =>
+    match exec_command st curcmd with
+    | Ok newst => compile_prog_aux newst rest
+    | Err e => Err e
+    end
   end.
 
-(* Вспомогательная функция вычисления программы *)
-Fixpoint eval_prog_aux (Sigma : eval_context) (prg : prog) : EvalResult :=
-  match prg with
-  | [] => ValCtx Tm_Unit Sigma
-  | [t] => eval_term Sigma t
-  | t :: rest =>
-      match eval_term Sigma t with
-      | ValCtx _ Sigma' => eval_prog_aux Sigma' rest
-      | FailValue => FailValue
-      end
-  end.
+Definition compile_prog (inprg : prog) : result machine_state :=
+  compile_prog_aux initial_state (unfold_prog inprg).
 
-(* Основная функция проверки типа программы *)
-Definition infer_type_prog (Γ : type_context) (prg : prog) : option type :=
-  match infer_type_prog_aux Γ prg with
-  | TypeCtx T _ => Some T
-  | FailType => None
-  end.
-
-(* Основная функция вычисления программы *)
-Definition eval_prog (Sigma : eval_context) (prg : prog) : option term :=
-  match eval_prog_aux Sigma prg with
-  | ValCtx v _ => Some v
-  | FailValue => None
-  end.
-
-Record Prg_Result := {ty : type; val : term}.
-
-Inductive CompileResult := 
-  | Prg_Ok : Prg_Result -> CompileResult
-  | Prg_Fail : CompileResult.
-
-Definition compile_prog (inprg : prog) : CompileResult :=
-  let prg := unfold_prog inprg
-  in
-  match infer_type_prog [] prg with
-  | Some prg_type => 
-      match eval_prog [] prg with
-      | Some prg_val => Prg_Ok {| ty := prg_type; val := prg_val |}
-      | None => Prg_Fail
-      end
-  | None => Prg_Fail
-  end.
 
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog := [
-  Tm_DeclVar "sing" (Tm_Sing (Tm_Prod [Tm_Elem "bla"])); 
-  Tm_DeclVar "myvar" (Tm_Prod [Tm_TyRep (Ty_Prod [Ty_Elem "one"]); Tm_Elem "0"; Tm_Var "sing"; Tm_Elem "2"; Tm_Elem "VAL"]);
-  Tm_Var "myvar"].
+  C_DeclVar "sing" (E_Sing (E_Prod [E_Elem "bla"])); 
+  C_DeclVar "myvar" (E_Prod [E_TRep (T_Prod [T_Elem "one"]); E_Elem "0"; E_Var "sing"; E_Elem "2"; E_Elem "VAL"]);
+  C_Eval (E_Var "myvar")  ].
 Compute (compile_prog example_good_prog).
 
-(* Хорошая программа - использование переменной в Tm_Sing *)
+(* Хорошая программа - использование переменной в E_Sing *)
 Example example_good_prog2 := [
-  Tm_DeclVar "input" (Tm_Elem "bla"); 
-  Tm_DeclVar "myvar"
-    (Tm_Prod [Tm_Elem "0"; Tm_Sing (Tm_Var "input"); Tm_Elem "2"; Tm_Elem "VAL"]);
-  Tm_Var "myvar"].
+  C_DeclVar "input" (E_Elem "bla"); 
+  C_DeclVar "myvar"
+    (E_Prod [E_Elem "0"; E_Sing (E_Var "input"); E_Elem "2"; E_Elem "VAL"]);
+  C_Eval (E_Var "myvar")].
 Compute (compile_prog example_good_prog2).
 
 (* Хорошая программа -  объявление типов-комбинаций *)
 Example example_good_prog3 := [
-  Tm_DeclVar "p" (Tm_Prod [Tm_Elem "Nat"]);
-  Tm_NewTypeAbbr "TP" (Ty_Prod [Ty_Elem "Nat"]);
-  Tm_DeclCombType "NatZero" [Ty_Elem "Zero"; Ty_Abbr "TP"];
-  Tm_DeclVar "n" (Tm_Comb [Tm_Elem "Zero"; Tm_Var "p"]);
-  Tm_DeclVar "s" (Tm_TyRep (Ty_Comb "NatZero"));
-  Tm_Prod [Tm_Var "n"; Tm_Var "s"] 
+  C_DeclVar "p" (E_Prod [E_Elem "Nat"]);
+  C_NewTypeAbbr "TP" (T_Prod [T_Elem "Nat"]);
+  C_DeclCombType "NatZero" [T_Elem "Zero"; T_Abbr "TP"];
+  C_DeclVar "n" (E_Comb [E_Elem "Zero"; E_Var "p"]);
+  C_DeclVar "s" (E_TRep (T_Comb "NatZero"));
+  C_Eval (E_Prod [E_Var "n"; E_Var "s"]) 
 ].
 Compute (compile_prog example_good_prog3).
 
 (* Плохая программа - undefined variable bad *)
-Example example_bad_prog := (Tm_DeclVar "bed" (Tm_Elem "()") :: Tm_Var "bad" :: []).
+Example example_bad_prog := [
+  C_DeclVar "bed" (E_Elem "()"); C_Eval (E_Var "bad")].
 Compute (compile_prog example_bad_prog).
 
-(* Плохая программа - объявление переменных не на топлевеле *)
-Example example_bad_prog2 := [Tm_Prod [Tm_Elem ""; Tm_DeclVar "bed" (Tm_Elem "()")]].
+(* Плохая программа - затенение переменных *)
+Example example_bad_prog2 := [
+  C_DeclVar "input" (E_Elem "bla");
+  C_DeclVar "input" (E_Prod [E_Elem "0"; E_Elem "2"; E_Elem "VAL"]);
+  C_Eval (E_Var "myvar")
+].
 Compute (compile_prog example_bad_prog2).
 
-(* Плохая программа - затенение переменных *)
-Example example_bad_prog3 := [Tm_DeclVar "input" (Tm_Elem "bla");
-  Tm_DeclVar "input" (Tm_Prod [Tm_Elem "0"; Tm_Elem "2"; Tm_Elem "VAL"]);
-  Tm_Var "myvar"].
-Compute (compile_prog example_bad_prog3).
-
-(* Плохая программа - прямое использование Ty_Cmd *)
-Example example_bad_prog4 : prog := [Tm_TyRep Ty_Cmd].
-Compute (compile_prog example_bad_prog4).
-
 (* Плохая программа - объявление типов и их синонимов с занятыми именами *)
-Example example_bad_prog5 : prog := [
-  Tm_NewTypeAbbr "NatZero" (Ty_Prod [Ty_Elem "Nat"]);
-  Tm_DeclCombType "NatZero" [Ty_Elem "Zero"; (Ty_Prod [Ty_Elem "Nat"])];
-  Tm_DeclVar "p" (Tm_Prod [Tm_Elem "Nat"]);
-  Tm_Var "p"
+Example example_bad_prog3 : prog := [
+  C_NewTypeAbbr "NatZero" (T_Prod [T_Elem "Nat"]);
+  C_DeclCombType "NatZero" [T_Elem "Zero"; (T_Prod [T_Elem "Nat"])];
+  C_DeclVar "p" (E_Prod [E_Elem "Nat"]);
+  C_Eval (E_Var "p")
 ].
-Compute (compile_prog example_bad_prog5).
+Compute (compile_prog example_bad_prog3).
 
 
