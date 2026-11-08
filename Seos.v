@@ -40,7 +40,7 @@ Inductive type : Type :=
   | Ty_Elem : elem -> type
   | Ty_Prim : prim -> type
   | Ty_Sing : term -> type
-  | Ty_Subst : type -> type
+  | Ty_TyRep : type -> type
   | Ty_Prod : list type -> type
   | Ty_Comb : TypeName -> type
 with term : Type :=
@@ -54,7 +54,7 @@ with term : Type :=
   | Tm_Elem : elem -> term
   | Tm_Prim : prim -> term
   | Tm_Sing : term -> term
-  | Tm_Subst : type -> term
+  | Tm_TyRep : type -> term
   | Tm_Prod : list term -> term
   | Tm_Comb : list term -> term.
 
@@ -198,8 +198,8 @@ Fixpoint eval_term (Sigma : eval_context) (tm : term) : EvalResult :=
       | FailValue => novalue
       end
     end
-  | Tm_Subst Ty_Cmd => novalue
-  | Tm_Subst T => somevalue (Tm_Subst T) Sigma
+  | Tm_TyRep Ty_Cmd => novalue
+  | Tm_TyRep T => somevalue (Tm_TyRep T) Sigma
   | Tm_Prod p =>
       match p with
       | [] => somevalue Tm_Unit Sigma
@@ -229,7 +229,7 @@ Fixpoint term_beq (it1 it2 : term) : bool :=
       | Tm_Elem e1, Tm_Elem e2 => eqb e1 e2
       | Tm_Prim p1, Tm_Prim p2 => prim_beq p1 p2
       | Tm_Sing tm1, Tm_Sing tm2 => term_beq tm1 tm2
-      | Tm_Subst tp1, Tm_Subst tp2 => type_beq tp1 tp2
+      | Tm_TyRep tp1, Tm_TyRep tp2 => type_beq tp1 tp2
       | Tm_Prod l1, Tm_Prod l2 => list_eqb term_beq l1 l2
       | Tm_Comb l1, Tm_Comb l2 => list_eqb term_beq l1 l2
       | _, _ => false
@@ -241,7 +241,7 @@ with type_beq (it1 it2 : type) : bool :=
       | Ty_Elem e1, Ty_Elem e2 => eqb e1 e2
       | Ty_Prim p1, Ty_Prim p2 => prim_beq p1 p2
       | Ty_Sing tm1, Ty_Sing tm2 => term_beq tm1 tm2
-      | Ty_Subst tp1, Ty_Subst tp2 => type_beq tp1 tp2
+      | Ty_TyRep tp1, Ty_TyRep tp2 => type_beq tp1 tp2
       | Ty_Prod l1, Ty_Prod l2 => list_eqb type_beq l1 l2
       | Ty_Comb vn1, Ty_Comb vn2 => eqb vn1 vn2
       | _, _ => false
@@ -334,12 +334,12 @@ Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : option type :=
     | Ty_Sing tm =>
       match infer_type_term Γ tm with
       | FailType => None
-      | TypeCtx tytm _ => Some (Ty_Sing tm)
+      | TypeCtx _ _ => Some (Ty_Sing tm)
       end
-    | Ty_Subst ty => 
+    | Ty_TyRep ty => 
         match norm_type Γ ty with
         | None => None
-        | Some nrmty => Some (Ty_Subst nrmty)
+        | Some nrmty => Some (Ty_TyRep nrmty)
         end
     | Ty_Prod [x] => norm_type Γ x
     | Ty_Prod (p1 :: ps) =>
@@ -408,12 +408,12 @@ with infer_type_term (Γ : type_context) (tm : term) : InferTypeResult :=
       | FailType => notype
       end
     end
-  | Tm_Subst T => 
+  | Tm_TyRep T => 
       match T with
       | Ty_Cmd => notype
       | _ => 
         match norm_type Γ T with 
-        | Some NT => sometype (Ty_Subst NT) Γ
+        | Some NT => sometype (Ty_TyRep NT) Γ
         | None => notype
         end
       end
@@ -452,9 +452,7 @@ Definition prog : Type := list term.
 Definition type_def_context : Type :=
   list (TypeName * type).
 
-(*
-  Окружение уже раскрытых определений термов.
-*)
+(* Окружение уже раскрытых определений термов. *)
 Definition term_def_context : Type :=
   list (VarName * term).
 
@@ -494,7 +492,7 @@ Fixpoint unfold_type
   | Ty_Abbr X =>
       match lookup_type_def Delta X with
       | Some T' => T'
-      | None => Ty_Abbr X
+      | None => Ty_Error
       end
 
   | Ty_Cmd => Ty_Cmd
@@ -504,8 +502,8 @@ Fixpoint unfold_type
   | Ty_Sing tm =>
       Ty_Sing (unfold_term Sigma Delta tm)
 
-  | Ty_Subst T1 =>
-      match norm_type [] (Ty_Subst (unfold_type Sigma Delta T1)) with
+  | Ty_TyRep T1 =>
+      match norm_type [] (Ty_TyRep (unfold_type Sigma Delta T1)) with
       | Some ntp => ntp
       | _ => Ty_Error
       end
@@ -531,7 +529,7 @@ with unfold_term
   | Tm_Var x =>
       match lookup_term_def Sigma x with
       | Some tm' => tm'
-      | None => Tm_Var x
+      | None => Tm_Error
       end
 
   | Tm_DeclVar x rhs =>
@@ -560,9 +558,9 @@ with unfold_term
       | _ => Tm_Error
       end
 
-  | Tm_Subst T =>
+  | Tm_TyRep T =>
       match norm_type [] (unfold_type Sigma Delta T) with
-      | Some ntp => Tm_Subst ntp
+      | Some ntp => Tm_TyRep ntp
       | _ => Tm_Error
       end
 
@@ -585,8 +583,6 @@ with unfold_term
       in Tm_Comb (go lst)
   end.
 
-
-
 Fixpoint unfold_prog_aux
     (Sigma : term_def_context)
     (Delta : type_def_context)
@@ -598,11 +594,10 @@ Fixpoint unfold_prog_aux
 
   | Tm_DeclVar x rhs :: rest =>
       let rhs' := unfold_term Sigma Delta rhs in
-      Tm_DeclVar x rhs'
-        :: unfold_prog_aux
-             ((x, rhs') :: Sigma)
-             Delta
-             rest
+        unfold_prog_aux
+         ((x, rhs') :: Sigma)
+         Delta
+         rest
 
   | Tm_NewTypeAbbr X T :: rest =>
       let T' := unfold_type Sigma Delta T in
@@ -627,7 +622,6 @@ Fixpoint unfold_prog_aux
       unfold_term Sigma Delta tm
         :: unfold_prog_aux Sigma Delta rest
   end.
-
 
 Definition unfold_prog (prg : prog) : prog :=
   unfold_prog_aux [] [] prg.
@@ -703,7 +697,7 @@ Definition compile_prog (inprg : prog) : CompileResult :=
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog := [
   Tm_DeclVar "sing" (Tm_Sing (Tm_Prod [Tm_Elem "bla"])); 
-  Tm_DeclVar "myvar" (Tm_Prod [Tm_Subst (Ty_Prod [Ty_Elem "one"]); Tm_Elem "0"; Tm_Var "sing"; Tm_Elem "2"; Tm_Elem "VAL"]);
+  Tm_DeclVar "myvar" (Tm_Prod [Tm_TyRep (Ty_Prod [Ty_Elem "one"]); Tm_Elem "0"; Tm_Var "sing"; Tm_Elem "2"; Tm_Elem "VAL"]);
   Tm_Var "myvar"].
 Compute (compile_prog example_good_prog).
 
@@ -721,7 +715,7 @@ Example example_good_prog3 := [
   Tm_NewTypeAbbr "TP" (Ty_Prod [Ty_Elem "Nat"]);
   Tm_DeclCombType "NatZero" [Ty_Elem "Zero"; Ty_Abbr "TP"];
   Tm_DeclVar "n" (Tm_Comb [Tm_Elem "Zero"; Tm_Var "p"]);
-  Tm_DeclVar "s" (Tm_Subst (Ty_Comb "NatZero"));
+  Tm_DeclVar "s" (Tm_TyRep (Ty_Comb "NatZero"));
   Tm_Prod [Tm_Var "n"; Tm_Var "s"] 
 ].
 Compute (compile_prog example_good_prog3).
@@ -741,7 +735,7 @@ Example example_bad_prog3 := [Tm_DeclVar "input" (Tm_Elem "bla");
 Compute (compile_prog example_bad_prog3).
 
 (* Плохая программа - прямое использование Ty_Cmd *)
-Example example_bad_prog4 : prog := [Tm_Subst Ty_Cmd].
+Example example_bad_prog4 : prog := [Tm_TyRep Ty_Cmd].
 Compute (compile_prog example_bad_prog4).
 
 (* Плохая программа - объявление типов и их синонимов с занятыми именами *)
