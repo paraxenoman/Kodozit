@@ -34,7 +34,6 @@ Definition prim_beq (p1 p2 : prim) : bool :=
 
 (* Синтаксис типов  *)
 Inductive type : Type :=
-  | T_Error : type
   | T_Abbr : TypeName -> type
   | T_Elem : elem -> type
   | T_Prim : prim -> type
@@ -44,7 +43,6 @@ Inductive type : Type :=
   | T_Comb : TypeName -> type
 with expr : Type :=
 (* Синтаксис выражений  *)
-  | E_Error : expr
   | E_Var : VarName -> expr
   | E_Elem : elem -> expr
   | E_Prim : prim -> expr
@@ -75,11 +73,9 @@ Inductive error : Type :=
   | Err_DuplicateType : TypeName -> error
   | Err_DuplicateCombSignature : TypeName -> list type -> error
   | Err_UnknownCombSignature : error
-  | Err_InvalidSingleton : error
   | Err_InvalidType : error
   | Err_TypeMismatch : error
-  | Err_UnexpectedVar : VarName -> error
-  | Err_NoResult : error.
+  | Err_UnexpectedVar : VarName -> error.
 
 Inductive result (A : Type) : Type :=
   | Ok : A -> result A
@@ -183,15 +179,15 @@ Fixpoint norm_list
 Record machine_state := {
   ms_type_ctx : type_context;
   ms_eval_ctx : eval_context;
-  ms_last_type : option type;
-  ms_last_value : option value
+  ms_last_type : type;
+  ms_last_value : value
 }.
 
 Definition initial_state : machine_state :=
   {| ms_type_ctx := [];
      ms_eval_ctx := [];
-     ms_last_type := None;
-     ms_last_value := None |}.
+     ms_last_type := T_Unit;
+     ms_last_value := V_Unit |}.
 
 (* Функция булевого равенства для типов без нормализации *)
 Fixpoint type_beq (it1 it2 : type) : bool := 
@@ -309,7 +305,6 @@ Definition type_declared (ctx : type_context) (intn : TypeName) : bool :=
 (* Функция нормализации для типов *)
 Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : result type :=
     match T with
-    | T_Error => Err Err_NoResult
     | T_Abbr tn => 
         if type_abbr_lookup Γ tn then 
           Ok (T_Abbr tn) 
@@ -372,7 +367,6 @@ with infer_type_value (Γ : type_context) (tm : value) : result type :=
 
 Fixpoint infer_type_expr (Γ : type_context) (tm : expr) : result type :=
   match tm with
-  | E_Error => Err Err_NoResult 
   | E_Var x => 
       match var_type_lookup Γ x with
       | Some T => Ok T
@@ -442,7 +436,6 @@ Fixpoint eval_expr (Sigma : eval_context) (tm : expr) : result value :=
           | Err e => Err e
           end
       end
-  | E_Error => Err Err_NoResult
   | E_Comb lst =>
       match (eval_expr_list eval_expr Sigma lst) with
       | Ok l => Ok (V_Comb l)
@@ -507,8 +500,8 @@ Definition exec_command (st : machine_state) (cmd : command) : result machine_st
       | Ok T, Ok v => Ok {| 
           ms_type_ctx := Γ;
           ms_eval_ctx := Sigma;
-          ms_last_type := Some T;
-          ms_last_value := Some v |}
+          ms_last_type := T;
+          ms_last_value := v |}
       | Err er, _ => Err er
       | _, Err er => Err er
       end
@@ -553,101 +546,147 @@ Fixpoint lookup_expr_def
       else lookup_expr_def rest x
   end.
 
+Fixpoint unfold_list
+          {A : Type} 
+          (f : expr_def_context -> type_def_context -> A -> result A)
+          (Sigma : expr_def_context)
+          (Delta : type_def_context)
+          (xs : list A) 
+          : result (list A) :=
+  match xs with
+  | [] => Ok []
+  | x :: rest =>
+     match f Sigma Delta x with
+     | Ok xn =>
+        match unfold_list f Sigma Delta rest with
+        | Ok newrest => Ok (xn :: newrest)
+        | Err e => Err e
+        end
+     | Err e => Err e
+     end
+  end.
+
 Fixpoint unfold_type
     (Sigma : expr_def_context)
     (Delta : type_def_context)
     (T : type) {struct T}
-  : type :=
+  : result type :=
   match T with
-  | T_Error => T_Error
   | T_Abbr X =>
       match lookup_type_def Delta X with
-      | Some T' => T'
-      | None => T_Error
+      | Some T' => Ok T'
+      | None => Err (Err_UnboundType X)
       end
-  | T_Elem e => T_Elem e
-  | T_Prim p => T_Prim p
 
-  | T_Sing tm => T_Sing tm
+  | T_Elem e => Ok (T_Elem e)
+  | T_Prim p => Ok (T_Prim p)
 
-  | T_TRep T1 => T_TRep (unfold_type Sigma Delta T1)
+  | T_Sing tm => Ok (T_Sing tm)
+
+  | T_TRep T1 => 
+      match unfold_type Sigma Delta T1 with
+      | Ok TN => Ok (T_TRep TN)
+      | Err e => Err e
+      end
 
   | T_Prod Ts =>
-      let fix go (xs : list type) : list type :=
-          match xs with
-          | [] => []
-          | x :: rest =>
-              unfold_type Sigma Delta x :: go rest
-          end
-      in T_Prod (go Ts)
-  | T_Comb tn => T_Comb tn
+        match unfold_list unfold_type Sigma Delta Ts with
+        | Ok newts => Ok (T_Prod newts)
+        | Err e => Err e
+        end
+  | T_Comb tn => Ok (T_Comb tn)
   end.
  
 Fixpoint unfold_expr
     (Sigma : expr_def_context)
     (Delta : type_def_context)
     (tm : expr) {struct tm}
-  : expr :=
+  : result expr :=
   match tm with
-  | E_Error => E_Error
   | E_Var x =>
       match lookup_expr_def Sigma x with
-      | Some tm' => tm'
-      | None => E_Error
+      | Some tm' => Ok tm'
+      | None => Err (Err_UnboundVar x)
       end
       
-  | E_Elem e => E_Elem e
-  | E_Prim p => E_Prim p
+  | E_Elem e => Ok (E_Elem e)
+  | E_Prim p => Ok (E_Prim p)
 
-  | E_Sing s => E_Sing (unfold_expr Sigma Delta s)
+  | E_Sing s =>
+      match unfold_expr Sigma Delta s with
+      | Ok ns => Ok (E_Sing ns)
+      | Err e => Err e
+      end
 
-  | E_TRep T => E_TRep (unfold_type Sigma Delta T)
+  | E_TRep T =>
+      match unfold_type Sigma Delta T with
+      | Ok TN => Ok (E_TRep TN)
+      | Err e => Err e
+      end
 
   | E_Prod ts =>
-      let fix go (xs : list expr) : list expr :=
-          match xs with
-          | [] => []
-          | x :: rest =>
-              unfold_expr Sigma Delta x :: go rest
-          end
-      in E_Prod (go ts)
+        match unfold_list unfold_expr Sigma Delta ts with
+        | Ok newts => Ok (E_Prod newts)
+        | Err e => Err e
+        end
   
   | E_Comb lst => 
-      let fix go (xs : list expr) : list expr :=
-          match xs with
-          | [] => []
-          | x :: rest =>
-              unfold_expr Sigma Delta x :: go rest
-          end
-      in E_Comb (go lst)
+      match unfold_list unfold_expr Sigma Delta lst with
+      | Ok newlst => Ok (E_Comb newlst)
+      | Err e => Err e
+      end
   end.
 
 Fixpoint unfold_prog_aux
     (Sigma : expr_def_context)
     (Delta : type_def_context)
     (prg : prog) {struct prg}
-  : prog :=
+  : result prog :=
   match prg with
-  | [] =>
-      []
+  | [] => Ok []
 
   | C_DeclVar x rhs :: rest =>
-      let rhs' := unfold_expr Sigma Delta rhs in
+      match unfold_expr Sigma Delta rhs with
+      | Ok rhs' => 
+          unfold_prog_aux
+             ((x, rhs') :: Sigma)
+             Delta
+             rest
+      | Err e => Err e
+      end
+      (*let rhs' := unfold_expr Sigma Delta rhs in
         unfold_prog_aux
          ((x, rhs') :: Sigma)
          Delta
-         rest
+         rest*)
 
   | C_NewTypeAbbr X T :: rest =>
-      let T' := unfold_type Sigma Delta T in
+      match unfold_type Sigma Delta T with
+      | Ok T' => 
+          match unfold_prog_aux Sigma ((X, T') :: Delta) rest with
+          | Ok restprg => Ok (C_NewTypeAbbr X T' :: restprg)
+          | Err e => Err e
+          end
+      | Err e => Err e
+      end
+      (*let T' := unfold_type Sigma Delta T in
       C_NewTypeAbbr X T'
         :: unfold_prog_aux
              Sigma
              ((X, T') :: Delta)
-             rest
+             rest*)
 
   | C_DeclCombType tn lst :: rest =>
       match unfold_type Sigma Delta (T_Prod lst) with
+      | Ok (T_Prod newlst) => 
+          match unfold_prog_aux Sigma Delta rest with
+          | Ok restprg => Ok (C_DeclCombType tn newlst :: restprg)
+          | Err e => Err e
+          end
+      | Ok _ => Err (Err_TypeMismatch)
+      | Err e => Err e
+      end
+      (* match unfold_type Sigma Delta (T_Prod lst) with
       | T_Prod newlst =>
         C_DeclCombType tn newlst
           :: unfold_prog_aux
@@ -655,17 +694,25 @@ Fixpoint unfold_prog_aux
                Delta
                rest
       | _ => rest
-      end
+      end*)
 
   | C_Eval e :: rest => 
-      let e' := unfold_expr Sigma Delta e in 
-      C_Eval e' :: unfold_prog_aux Sigma Delta rest
+      match unfold_expr Sigma Delta e with
+      | Ok e' =>
+          match unfold_prog_aux Sigma Delta rest with
+          | Ok restprg => Ok (C_Eval e' :: restprg)
+          | Err er => Err er
+          end
+      | Err er => Err er
+      end
+      (*let e' := unfold_expr Sigma Delta e in 
+      C_Eval e' :: unfold_prog_aux Sigma Delta rest*)
   end.
 
-Definition unfold_prog (prg : prog) : prog :=
+Definition unfold_prog (prg : prog) : result prog :=
   unfold_prog_aux [] [] prg.
 
-Record Prg_Result := {ty : type; val : expr}.
+Record Prg_Result := {prog_type : type; prog_val : value}.
 
 Fixpoint compile_prog_aux (st : machine_state) (inprg : prog) {struct inprg} : result machine_state :=
   match inprg with
@@ -675,15 +722,22 @@ Fixpoint compile_prog_aux (st : machine_state) (inprg : prog) {struct inprg} : r
           ms_last_type := st.(ms_last_type);
           ms_last_value := st.(ms_last_value) |}
   | [c] => exec_command st c
-  | curcmd :: rest =>
-    match exec_command st curcmd with
-    | Ok newst => compile_prog_aux newst rest
-    | Err e => Err e
-    end
+  | (curcmd :: rest) =>
+      match exec_command st curcmd with
+      | Ok newst => compile_prog_aux newst rest
+      | Err e => Err e
+      end
   end.
 
-Definition compile_prog (inprg : prog) : result machine_state :=
-  compile_prog_aux initial_state (unfold_prog inprg).
+Definition compile_prog (inprg : prog) : result Prg_Result :=
+  match unfold_prog inprg with
+  | Ok newprg => 
+      match compile_prog_aux initial_state newprg with
+      | Ok st => Ok {| prog_type := ms_last_type st; prog_val := ms_last_value st |}
+      | Err e => Err e
+      end
+  | Err e => Err e
+  end.
 
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog := [
