@@ -654,11 +654,6 @@ Fixpoint unfold_prog_aux
              rest
       | Err e => Err e
       end
-      (*let rhs' := unfold_expr Sigma Delta rhs in
-        unfold_prog_aux
-         ((x, rhs') :: Sigma)
-         Delta
-         rest*)
 
   | C_NewTypeAbbr X T :: rest =>
       match unfold_type Sigma Delta T with
@@ -669,12 +664,6 @@ Fixpoint unfold_prog_aux
           end
       | Err e => Err e
       end
-      (*let T' := unfold_type Sigma Delta T in
-      C_NewTypeAbbr X T'
-        :: unfold_prog_aux
-             Sigma
-             ((X, T') :: Delta)
-             rest*)
 
   | C_DeclCombType tn lst :: rest =>
       match unfold_type Sigma Delta (T_Prod lst) with
@@ -686,15 +675,6 @@ Fixpoint unfold_prog_aux
       | Ok _ => Err (Err_TypeMismatch)
       | Err e => Err e
       end
-      (* match unfold_type Sigma Delta (T_Prod lst) with
-      | T_Prod newlst =>
-        C_DeclCombType tn newlst
-          :: unfold_prog_aux
-               Sigma
-               Delta
-               rest
-      | _ => rest
-      end*)
 
   | C_Eval e :: rest => 
       match unfold_expr Sigma Delta e with
@@ -705,8 +685,6 @@ Fixpoint unfold_prog_aux
           end
       | Err er => Err er
       end
-      (*let e' := unfold_expr Sigma Delta e in 
-      C_Eval e' :: unfold_prog_aux Sigma Delta rest*)
   end.
 
 Definition unfold_prog (prg : prog) : result prog :=
