@@ -213,39 +213,6 @@ with value_beq (it1 it2 : value) : bool :=
   | _, _ => false
   end.
 
-(* Функция булевого равенства для выражений *)
-Fixpoint expr_beq (it1 it2 : expr) : bool :=
-  match it1, it2 with
-  | E_Var vn1, E_Var vn2 => eqb vn1 vn2
-  | E_Elem e1, E_Elem e2 => eqb e1 e2
-  | E_Prim p1, E_Prim p2 => prim_beq p1 p2
-  | E_Sing tm1, E_Sing tm2 => expr_beq tm1 tm2
-  | E_TRep tp1, E_TRep tp2 => type_beq tp1 tp2
-  | E_Prod l1, E_Prod l2 => list_eqb expr_beq l1 l2
-  | E_Comb l1, E_Comb l2 => list_eqb expr_beq l1 l2
-  | _, _ => false
-  end.
-
-(* Функция булевого равенства для значений *)
-Definition norm_expr_beq (f : eval_context -> expr -> result value) (ctx : eval_context) (it1 it2 : expr) : bool :=
-  let mnt1 := f ctx it1 
-    in let mnt2 := f ctx it2
-      in
-        match mnt1, mnt2 with
-        | Ok v1, Ok v2 => value_beq v1 v2
-        | _, _ => false
-        end.
-        
-(* Функция булевого равенства для нормализованых типов *)
-Definition norm_type_beq (f : type_context -> type -> option type) (ctx : type_context) (it1 it2 : type) : bool :=
-  let mnt1 := f ctx it1 
-    in let mnt2 := f ctx it2
-      in
-        match mnt1, mnt2 with
-        | Some nt1, Some nt2 => type_beq nt1 nt2
-        | _, _ => false
-        end.
-
 (* Функция поиска типа комбинации *)
 Fixpoint type_comb_lookup 
       (Γ : type_context) 
