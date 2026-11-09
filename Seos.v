@@ -37,7 +37,6 @@ Inductive type : Type :=
   | T_Abbr : TypeName -> type
   | T_Elem : elem -> type
   | T_Prim : prim -> type
-  | T_Sing : value -> type
   | T_TRep : type -> type
   | T_Prod : list type -> type
   | T_Comb : TypeName -> type
@@ -46,7 +45,6 @@ with expr : Type :=
   | E_Var : VarName -> expr
   | E_Elem : elem -> expr
   | E_Prim : prim -> expr
-  | E_Sing : expr -> expr
   | E_TRep : type -> expr
   | E_Prod : list expr -> expr
   | E_Comb : list expr -> expr
@@ -54,7 +52,6 @@ with expr : Type :=
 with value : Type :=
   | V_Elem : elem -> value
   | V_Prim : prim -> value
-  | V_Sing : value -> value
   | V_TRep : type -> value
   | V_Prod : list value -> value
   | V_Comb : list value -> value.
@@ -173,9 +170,6 @@ Fixpoint norm_list
     end
   end.
 
-
-
-
 Record machine_state := {
   ms_type_ctx : type_context;
   ms_eval_ctx : eval_context;
@@ -195,18 +189,17 @@ Fixpoint type_beq (it1 it2 : type) : bool :=
   | T_Abbr vn1, T_Abbr vn2 => eqb vn1 vn2
   | T_Elem e1, T_Elem e2 => eqb e1 e2
   | T_Prim p1, T_Prim p2 => prim_beq p1 p2
-  | T_Sing tm1, T_Sing tm2 => value_beq tm1 tm2
   | T_TRep tp1, T_TRep tp2 => type_beq tp1 tp2
   | T_Prod l1, T_Prod l2 => list_eqb type_beq l1 l2
   | T_Comb vn1, T_Comb vn2 => eqb vn1 vn2
   | _, _ => false
-  end
+  end.
+  
 (* Функция булевого равенства для значений *)
-with value_beq (it1 it2 : value) : bool :=
+Fixpoint value_beq (it1 it2 : value) : bool :=
   match it1, it2 with
   | V_Elem e1, V_Elem e2 => eqb e1 e2
   | V_Prim p1, V_Prim p2 => prim_beq p1 p2
-  | V_Sing tm1, V_Sing tm2 => value_beq tm1 tm2
   | V_TRep tp1, V_TRep tp2 => type_beq tp1 tp2
   | V_Prod l1, V_Prod l2 => list_eqb value_beq l1 l2
   | V_Comb l1, V_Comb l2 => list_eqb value_beq l1 l2
@@ -273,15 +266,10 @@ Definition type_declared (ctx : type_context) (intn : TypeName) : bool :=
 Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : result type :=
     match T with
     | T_Abbr tn => 
-        if type_abbr_lookup Γ tn then 
-          Ok (T_Abbr tn) 
-        else 
-          Err (Err_UnboundType tn)
-    | T_Sing tm =>
-      match infer_type_value Γ tm with
-      | Err e => Err e
-      | Ok _ => Ok (T_Sing tm)
-      end
+        match type_abbr_lookup Γ tn with
+        | Some T => Ok (T_Abbr tn)
+        | None => Err (Err_UnboundType tn)
+        end
     | T_TRep ty => 
         match norm_type Γ ty with
         | Err e => Err e
@@ -294,44 +282,9 @@ Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : result type :=
         | Err e => Err e
         end
     | _ => Ok T
-    end
-(* Функция вывода и проверки типов *)
-with infer_type_value (Γ : type_context) (tm : value) : result type :=
-  match tm with
-  | V_Elem u => Ok (T_Elem u)
-  | V_Prim p => Ok (T_Prim p)
-  | V_Sing s =>
-      match infer_type_value Γ s with
-      | Ok T => Ok (T_Sing s)
-      | Err e => Err e
-      end
-  | V_TRep T => 
-      match norm_type Γ T with 
-      | Ok NT => Ok (T_TRep NT)
-      | Err e => Err e
-      end
-  | V_Prod [] => Ok T_Unit
-  | V_Prod [x] => 
-      match infer_type_value Γ x with
-      | Ok T => Ok T
-      | Err e => Err e
-      end
-  | V_Prod (p1 :: ps) =>
-      match infer_list infer_type_value Γ (p1 :: ps) with
-      | Ok P => Ok (T_Prod P) 
-      | Err e => Err e
-      end
-  | V_Comb lst =>
-      match infer_list infer_type_value Γ lst with
-      | Ok wtlst => 
-          match type_comb_lookup Γ wtlst with
-          | Some TN => Ok (T_Comb TN)
-          | None => Err (Err_UnknownCombSignature)
-          end
-      | Err e => Err e
-      end 
-  end.
+    end.
 
+(* Функция вывода и проверки типов *)
 Fixpoint infer_type_expr (Γ : type_context) (tm : expr) : result type :=
   match tm with
   | E_Var x => 
@@ -341,11 +294,6 @@ Fixpoint infer_type_expr (Γ : type_context) (tm : expr) : result type :=
       end 
   | E_Elem u => Ok (T_Elem u)
   | E_Prim p => Ok (T_Prim p)
-  | E_Sing s =>
-      match s with
-      | E_Var x => Err (Err_UnexpectedVar x)
-      | e => infer_type_expr Γ e
-      end
   | E_TRep T => 
       match norm_type Γ T with 
       | Ok NT => Ok (T_TRep NT)
@@ -383,11 +331,6 @@ Fixpoint eval_expr (Sigma : eval_context) (tm : expr) : result value :=
       end
   | E_Elem e => Ok (V_Elem e)
   | E_Prim p => Ok (V_Prim p)
-  | E_Sing s =>
-      match eval_expr Sigma s with
-      | Ok v => Ok (V_Sing v)
-      | Err e => Err e
-      end
   | E_TRep T => 
       match norm_type [] T with
       | Ok TN => Ok (V_TRep TN)
@@ -417,9 +360,10 @@ Definition exec_command (st : machine_state) (cmd : command) : result machine_st
   | C_DeclVar x inex =>
       match var_value_lookup Sigma x, var_type_lookup Γ x with
       | None, None =>
-          match eval_expr Sigma inex with
-          | Ok ex => 
-              match infer_type_value Γ ex, (Ok ex) with
+          match infer_type_expr Γ inex with
+          | Err e => Err e
+          | tpres => 
+              match tpres, eval_expr Sigma inex with
               | Ok t, Ok v => Ok {| 
                   ms_type_ctx := (BindVarType x t :: Γ);
                   ms_eval_ctx := (BindVarValue x v :: Sigma);
@@ -428,7 +372,6 @@ Definition exec_command (st : machine_state) (cmd : command) : result machine_st
               | Err er, _ => Err er
               | _, Err er => Err er
               end
-          | Err e => Err e
           end
       | _, _ => Err (Err_DuplicateVar x)
       end
@@ -548,8 +491,6 @@ Fixpoint unfold_type
   | T_Elem e => Ok (T_Elem e)
   | T_Prim p => Ok (T_Prim p)
 
-  | T_Sing tm => Ok (T_Sing tm)
-
   | T_TRep T1 => 
       match unfold_type Sigma Delta T1 with
       | Ok TN => Ok (T_TRep TN)
@@ -563,7 +504,7 @@ Fixpoint unfold_type
         end
   | T_Comb tn => Ok (T_Comb tn)
   end.
- 
+
 Fixpoint unfold_expr
     (Sigma : expr_def_context)
     (Delta : type_def_context)
@@ -578,12 +519,6 @@ Fixpoint unfold_expr
       
   | E_Elem e => Ok (E_Elem e)
   | E_Prim p => Ok (E_Prim p)
-
-  | E_Sing s =>
-      match unfold_expr Sigma Delta s with
-      | Ok ns => Ok (E_Sing ns)
-      | Err e => Err e
-      end
 
   | E_TRep T =>
       match unfold_type Sigma Delta T with
@@ -686,21 +621,13 @@ Definition compile_prog (inprg : prog) : result Prg_Result :=
 
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog := [
-  C_DeclVar "sing" (E_Sing (E_Prod [E_Elem "bla"])); 
-  C_DeclVar "myvar" (E_Prod [E_TRep (T_Prod [T_Elem "one"]); E_Elem "0"; E_Var "sing"; E_Elem "2"; E_Elem "VAL"]);
+  C_DeclVar "oneprod" (E_Prod [E_Elem "bla"]); 
+  C_DeclVar "myvar" (E_Prod [E_TRep (T_Prod [T_Elem "one"]); E_Elem "0"; E_Var "oneprod"; E_Elem "2"; E_Elem "VAL"]);
   C_Eval (E_TRep (T_Prod [T_Elem "one"])); C_Eval (E_Var "myvar") ].
 Compute (compile_prog example_good_prog).
 
-(* Хорошая программа - использование переменной в E_Sing *)
-Example example_good_prog2 := [
-  C_DeclVar "input" (E_Elem "bla"); 
-  C_DeclVar "myvar"
-    (E_Prod [E_Elem "0"; E_Sing (E_Var "input"); E_Elem "2"; E_Elem "VAL"]);
-  C_Eval (E_Var "myvar")].
-Compute (compile_prog example_good_prog2).
-
 (* Хорошая программа -  объявление типов-комбинаций *)
-Example example_good_prog3 := [
+Example example_good_prog2 := [
   C_DeclVar "p" (E_Prod [E_Elem "Nat"]);
   C_NewTypeAbbr "TP" (T_Prod [T_Elem "Nat"]);
   C_DeclCombType "NatZero" [T_Elem "Zero"; T_Prod [T_Abbr "TP"]];
@@ -708,7 +635,7 @@ Example example_good_prog3 := [
   C_DeclVar "s" (E_TRep (T_Comb "NatZero"));
   C_Eval (E_Prod [E_Var "n"; E_Var "s"]) 
 ].
-Compute (compile_prog example_good_prog3).
+Compute (compile_prog example_good_prog2).
 
 (* Плохая программа - undefined variable bad *)
 Example example_bad_prog := [
