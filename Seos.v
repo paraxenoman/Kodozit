@@ -73,7 +73,7 @@ Inductive error : Type :=
   | Err_UnboundType : TypeName -> error
   | Err_DuplicateVar : VarName -> error
   | Err_DuplicateType : TypeName -> error
-  | Err_DuplicateCombSignature : list type -> error
+  | Err_DuplicateCombSignature : TypeName -> list type -> error
   | Err_UnknownCombSignature : error
   | Err_InvalidSingleton : error
   | Err_InvalidType : error
@@ -177,39 +177,7 @@ Fixpoint norm_list
     end
   end.
 
-(* Функция вычисления термов *) 
-Fixpoint eval_expr (Sigma : eval_context) (tm : expr) : result value :=
-  match tm with
-  | E_Var x =>
-      match var_value_lookup Sigma x with
-      | Some v => Ok v
-      | None => Err (Err_UnboundVar x)
-      end
-  | E_Elem e => Ok (V_Elem e)
-  | E_Prim p => Ok (V_Prim p)
-  | E_Sing s =>
-      match eval_expr Sigma s with
-      | Ok v => Ok (V_Sing v)
-      | Err e => Err e
-      end
-  | E_TRep T => Ok (V_TRep T)
-  | E_Prod p =>
-      match p with
-      | [] => Ok V_Unit
-      | [x] => eval_expr Sigma x
-      | _ =>
-          match (eval_expr_list eval_expr Sigma p) with
-          | Ok l => Ok (V_Prod l)
-          | Err e => Err e
-          end
-      end
-  | E_Error => Err Err_NoResult
-  | E_Comb lst =>
-      match (eval_expr_list eval_expr Sigma lst) with
-      | Ok l => Ok (V_Comb l)
-      | Err e => Err e
-      end
-  end.
+
 
 
 Record machine_state := {
@@ -444,6 +412,44 @@ Fixpoint infer_type_expr (Γ : type_context) (tm : expr) : result type :=
       end 
   end.
 
+(* Функция вычисления для выражений *) 
+Fixpoint eval_expr (Sigma : eval_context) (tm : expr) : result value :=
+  match tm with
+  | E_Var x =>
+      match var_value_lookup Sigma x with
+      | Some v => Ok v
+      | None => Err (Err_UnboundVar x)
+      end
+  | E_Elem e => Ok (V_Elem e)
+  | E_Prim p => Ok (V_Prim p)
+  | E_Sing s =>
+      match eval_expr Sigma s with
+      | Ok v => Ok (V_Sing v)
+      | Err e => Err e
+      end
+  | E_TRep T => 
+      match norm_type [] T with
+      | Ok TN => Ok (V_TRep TN)
+      | Err e => Err e
+      end
+  | E_Prod p =>
+      match p with
+      | [] => Ok V_Unit
+      | [x] => eval_expr Sigma x
+      | _ =>
+          match (eval_expr_list eval_expr Sigma p) with
+          | Ok l => Ok (V_Prod l)
+          | Err e => Err e
+          end
+      end
+  | E_Error => Err Err_NoResult
+  | E_Comb lst =>
+      match (eval_expr_list eval_expr Sigma lst) with
+      | Ok l => Ok (V_Comb l)
+      | Err e => Err e
+      end
+  end.
+
 Definition exec_command (st : machine_state) (cmd : command) : result machine_state :=
   let Γ := st.(ms_type_ctx) in
   let Sigma := st.(ms_eval_ctx) in
@@ -483,18 +489,19 @@ Definition exec_command (st : machine_state) (cmd : command) : result machine_st
       if type_declared Γ tn then
         Err (Err_DuplicateType tn)
       else
-        match type_comb_lookup Γ lst with
-        | Some _ => Err (Err_DuplicateCombSignature lst)
+      match norm_list norm_type Γ lst with
+      | Ok nrmlst =>
+        match type_comb_lookup Γ nrmlst with
+        | Some _ => Err (Err_DuplicateCombSignature tn lst)
         | None => 
-            match norm_list norm_type Γ lst with
-            | Ok nrmlst => Ok {| 
+             Ok {| 
               ms_type_ctx := (BindCombType tn nrmlst :: Γ);
               ms_eval_ctx := Sigma;
               ms_last_type := st.(ms_last_type);
               ms_last_value := st.(ms_last_value) |}
-            | Err e => Err e
-            end
         end
+      | Err e => Err e
+      end
   | C_Eval e =>
       match infer_type_expr Γ e, eval_expr Sigma e with
       | Ok T, Ok v => Ok {| 
@@ -563,11 +570,7 @@ Fixpoint unfold_type
 
   | T_Sing tm => T_Sing tm
 
-  | T_TRep T1 =>
-      match norm_type [] (T_TRep (unfold_type Sigma Delta T1)) with
-      | Ok ntp => ntp
-      | _ => T_Error
-      end
+  | T_TRep T1 => T_TRep (unfold_type Sigma Delta T1)
 
   | T_Prod Ts =>
       let fix go (xs : list type) : list type :=
@@ -598,11 +601,7 @@ Fixpoint unfold_expr
 
   | E_Sing s => E_Sing (unfold_expr Sigma Delta s)
 
-  | E_TRep T =>
-      match norm_type [] (unfold_type Sigma Delta T) with
-      | Ok ntp => E_TRep ntp
-      | _ => E_Error
-      end
+  | E_TRep T => E_TRep (unfold_type Sigma Delta T)
 
   | E_Prod ts =>
       let fix go (xs : list expr) : list expr :=
@@ -686,12 +685,11 @@ Fixpoint compile_prog_aux (st : machine_state) (inprg : prog) {struct inprg} : r
 Definition compile_prog (inprg : prog) : result machine_state :=
   compile_prog_aux initial_state (unfold_prog inprg).
 
-
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog := [
   C_DeclVar "sing" (E_Sing (E_Prod [E_Elem "bla"])); 
   C_DeclVar "myvar" (E_Prod [E_TRep (T_Prod [T_Elem "one"]); E_Elem "0"; E_Var "sing"; E_Elem "2"; E_Elem "VAL"]);
-  C_Eval (E_Var "myvar")  ].
+  C_Eval (E_TRep (T_Prod [T_Elem "one"])); C_Eval (E_Var "myvar") ].
 Compute (compile_prog example_good_prog).
 
 (* Хорошая программа - использование переменной в E_Sing *)
@@ -706,8 +704,8 @@ Compute (compile_prog example_good_prog2).
 Example example_good_prog3 := [
   C_DeclVar "p" (E_Prod [E_Elem "Nat"]);
   C_NewTypeAbbr "TP" (T_Prod [T_Elem "Nat"]);
-  C_DeclCombType "NatZero" [T_Elem "Zero"; T_Abbr "TP"];
-  C_DeclVar "n" (E_Comb [E_Elem "Zero"; E_Var "p"]);
+  C_DeclCombType "NatZero" [T_Elem "Zero"; T_Prod [T_Abbr "TP"]];
+  C_DeclVar "n" (E_Comb [E_Elem "Zero"; E_Elem "Nat"]);
   C_DeclVar "s" (E_TRep (T_Comb "NatZero"));
   C_Eval (E_Prod [E_Var "n"; E_Var "s"]) 
 ].
@@ -735,4 +733,10 @@ Example example_bad_prog3 : prog := [
 ].
 Compute (compile_prog example_bad_prog3).
 
-
+(* Плохая программа - объявление типов комбинаций с одинаковым набором типов *)
+Example example_bad_prog4 : prog := [
+  C_NewTypeAbbr "TP" (T_Prod [T_Elem "Nat"]);
+  C_DeclCombType "NatZero" [T_Elem "Zero"; T_Elem "Nat"];
+  C_DeclCombType "NatZeroCopy" [T_Elem "Zero"; T_Prod [T_Abbr "TP"]]
+].
+Compute (compile_prog example_bad_prog4).
