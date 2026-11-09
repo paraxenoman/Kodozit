@@ -267,7 +267,7 @@ Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : result type :=
     match T with
     | T_Abbr tn => 
         match type_abbr_lookup Γ tn with
-        | Some T => Ok (T_Abbr tn)
+        | Some T => Ok T
         | None => Err (Err_UnboundType tn)
         end
     | T_TRep ty => 
