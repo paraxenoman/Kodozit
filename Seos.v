@@ -40,17 +40,19 @@ Inductive type : Type :=
   | T_Prim : prim -> type
   | T_TRep : type -> type
   | T_Prod : list type -> type
-  | T_Comb : TypeName -> list type -> type
-with expr : Type :=
+  | T_Comb : TypeName -> list type -> type.
+
 (* Синтаксис выражений  *)
+Inductive expr : Type :=
   | E_Var : VarName -> expr
   | E_Elem : elem -> expr
   | E_Prim : prim -> expr
   | E_TRep : type -> expr
   | E_Prod : list expr -> expr
-  | E_Comb : list expr -> list expr -> expr
+  | E_Comb : list expr -> list expr -> expr.
+
 (* Синтаксис значений *)
-with value : Type :=
+Inductive value : Type :=
   | V_Elem : elem -> value
   | V_Prim : prim -> value
   | V_TRep : type -> value
@@ -199,18 +201,6 @@ Fixpoint type_beq (it1 it2 : type) : bool :=
   | T_Hole, T_Hole => true
   | _, _ => false
   end.
-  
-(* Функция булевого равенства для значений *)
-Fixpoint value_beq (it1 it2 : value) : bool :=
-  match it1, it2 with
-  | V_Elem e1, V_Elem e2 => eqb e1 e2
-  | V_Prim p1, V_Prim p2 => prim_beq p1 p2
-  | V_TRep tp1, V_TRep tp2 => type_beq tp1 tp2
-  | V_Prod l1, V_Prod l2 => list_eqb value_beq l1 l2
-  | V_Comb lc1 lp1, V_Comb lc2 lp2 => 
-      list_eqb value_beq lc1 lc2 && list_eqb value_beq lp1 lp2
-  | _, _ => false
-  end.
 
 (* Функция поиска типа комбинации *)
 Fixpoint type_comb_lookup 
@@ -305,6 +295,27 @@ Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : result type :=
       end
     | _ => Ok T
     end.
+
+Definition norm_type_beq
+    (Γ : type_context)
+    (T1 T2 : type) : result bool :=
+  match norm_type Γ T1, norm_type Γ T2 with
+  | Ok N1, Ok N2 => Ok (type_beq N1 N2)
+  | Err e, _ => Err e
+  | _, Err e => Err e
+  end.
+
+(* Функция булевого равенства для значений *)
+Definition value_beq (fnteq : type -> type -> result bool) (fveq : value -> value -> bool) (it1 it2 : value) : result bool :=
+  match it1, it2 with
+  | V_Elem e1, V_Elem e2 => Ok (eqb e1 e2)
+  | V_Prim p1, V_Prim p2 => Ok (prim_beq p1 p2)
+  | V_TRep tp1, V_TRep tp2 => fnteq tp1 tp2
+  | V_Prod l1, V_Prod l2 => Ok (list_eqb fveq l1 l2)
+  | V_Comb lc1 lp1, V_Comb lc2 lp2 => 
+      Ok (list_eqb fveq lc1 lc2 && list_eqb fveq lp1 lp2)
+  | _, _ => Ok false
+  end.
 
 Fixpoint unify_generic_list_aux
     (position : nat)
@@ -640,10 +651,10 @@ Fixpoint unfold_prog_aux
   | C_DeclVar x rhs :: rest =>
       match unfold_expr Sigma Delta rhs with
       | Ok rhs' => 
-          unfold_prog_aux
-             ((x, rhs') :: Sigma)
-             Delta
-             rest
+          match unfold_prog_aux ((x, rhs') :: Sigma) Delta rest with
+          | Ok restprg => Ok (C_DeclVar x rhs' :: restprg)
+          | Err e => Err e
+          end
       | Err e => Err e
       end
 
@@ -714,6 +725,14 @@ Definition compile_prog (inprg : prog) : result Prg_Result :=
       end
   | Err e => Err e
   end.
+
+
+Example example_good_prog := [
+  C_NewTypeAbbr "A" (T_Elem "a");
+  C_Eval (E_TRep (T_Abbr "A"))
+].
+Compute (compile_prog example_good_prog).
+
 
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog := [
