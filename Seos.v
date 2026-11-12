@@ -75,9 +75,10 @@ Inductive error : Type :=
   | Err_DuplicateCombSignature : TypeName -> list type -> error
   | Err_UnknownCombSignature : error
   | Err_InvalidType : error
-  | Err_TypeMismatch : error
+  | Err_TypeMismatch : type -> type -> error
   | Err_UnexpectedVar : VarName -> error
-  | Err_CombTypeClosed : TypeName -> error.
+  | Err_CombTypeClosed : TypeName -> error
+  | Err_TypeListMismatch : list type -> list type -> error.
 
 Inductive result (A : Type) : Type :=
   | Ok : A -> result A
@@ -331,25 +332,27 @@ Fixpoint unify_generic_list_aux
     (position : nat)
     (tvlst : list (string * type))
     (plst arglst : list type)
+    (origplst origarglst : list type)
     : result (list type) :=
     match plst, arglst with
     | [], [] => Ok []
-    | [], _ :: _ | _ :: _, [] => Err (Err_TypeMismatch)
+    | [], _ :: _ => Err (Err_TypeListMismatch origplst origarglst)
+    | _ :: _, [] => Err (Err_TypeListMismatch origplst origarglst)
     | p :: ps, arg :: args =>
       match p with
       | T_Hole vn =>
           match type_hole_lookup tvlst vn with
           | Some T =>
             if type_beq T arg then
-              match unify_generic_list_aux (S position) tvlst ps args with
+              match unify_generic_list_aux (S position) tvlst ps args origplst origarglst with
               | Ok result_tail => 
                   Ok (arg :: result_tail)
               | Err e => Err e
               end
-            else Err Err_TypeMismatch
+            else Err (Err_TypeMismatch T arg)
           | None =>
               (* T_Hole заменяется соответствующим аргументом. *)
-              match unify_generic_list_aux (S position) ((vn, arg) :: tvlst) ps args with
+              match unify_generic_list_aux (S position) ((vn, arg) :: tvlst) ps args origplst origarglst with
               | Ok result_tail => 
                   Ok (arg :: result_tail)
               | Err e => Err e
@@ -358,19 +361,19 @@ Fixpoint unify_generic_list_aux
       | _ =>
         if type_beq p arg then
           (* Не T_Hole допускается только при совпадении с аргументом. *)
-          match unify_generic_list_aux (S position) tvlst ps args with
+          match unify_generic_list_aux (S position) tvlst ps args origplst origarglst with
           | Ok result_tail => Ok (p :: result_tail)
           | Err e => Err e
           end
         else
-          Err (Err_TypeMismatch)
+          Err (Err_TypeMismatch p arg)
       end
     end.
 
 Definition unify_generic_list
     (plst arglst : list type)
     : result (list type) :=
-  unify_generic_list_aux 0 [] plst arglst.
+  unify_generic_list_aux 0 [] plst arglst plst arglst.
 
 (* Функция вывода и проверки типов *)
 Fixpoint infer_type_expr (Γ : type_context) (tm : expr) : result type :=
@@ -700,7 +703,7 @@ Fixpoint unfold_prog_aux
           | Ok restprg => Ok (C_DeclCombVariant tn newlst newargs :: restprg)
           | Err e => Err e
           end
-      | Ok _, _ | _, Ok _ => Err (Err_TypeMismatch)
+      | Ok _, _ | _, Ok _ => Err (Err_InvalidType)
       | Err e, _ => Err e
       end
 
@@ -795,7 +798,7 @@ Example example_good_prog5 := [
 ].
 Compute (compile_prog example_good_prog5).
 
-(* Плохая программа - несовпадение типов параметров *)
+(* Плохая программа - несоблюдение ограничений типов *)
 Example example_bad_prog0 := [
   C_DeclCombVariant "Foo" [T_Elem "Foo"] [T_Hole "a"; T_Hole "a"];
   C_CloseCombType "Foo";
