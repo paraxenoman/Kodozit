@@ -34,7 +34,7 @@ Definition prim_beq (p1 p2 : prim) : bool :=
 
 (* Синтаксис типов  *)
 Inductive type : Type :=
-  | T_Hole : type
+  | T_Hole : string -> type
   | T_Abbr : TypeName -> type
   | T_Elem : elem -> type
   | T_Prim : prim -> type
@@ -198,7 +198,7 @@ Fixpoint type_beq (it1 it2 : type) : bool :=
   | T_TRep tp1, T_TRep tp2 => type_beq tp1 tp2
   | T_Prod l1, T_Prod l2 => list_eqb type_beq l1 l2
   | T_Comb vn1 l1, T_Comb vn2 l2 => eqb vn1 vn2 && list_eqb type_beq l1 l2
-  | T_Hole, T_Hole => true
+  | T_Hole vn1, T_Hole vn2 => eqb vn1 vn2
   | _, _ => false
   end.
 
@@ -317,35 +317,60 @@ Definition value_beq (fnteq : type -> type -> result bool) (fveq : value -> valu
   | _, _ => Ok false
   end.
 
+Fixpoint type_hole_lookup (tvlst : list (string * type)) (x : string) : option type :=
+  match tvlst with
+  | [] => None
+  | (y, T) :: rest => 
+      if eqb x y then
+        Some T 
+      else 
+        type_hole_lookup rest x
+  end.
+
 Fixpoint unify_generic_list_aux
     (position : nat)
+    (tvlst : list (string * type))
     (plst arglst : list type)
     : result (list type) :=
     match plst, arglst with
     | [], [] => Ok []
     | [], _ :: _ | _ :: _, [] => Err (Err_TypeMismatch)
     | p :: ps, arg :: args =>
-        if type_beq p T_Hole then
-          (* T_Hole заменяется соответствующим аргументом. *)
-          match unify_generic_list_aux (S position) ps args with
-          | Ok result_tail => Ok (arg :: result_tail)
-          | Err e => Err e
+      match p with
+      | T_Hole vn =>
+          match type_hole_lookup tvlst vn with
+          | Some T =>
+            if type_beq T arg then
+              match unify_generic_list_aux (S position) tvlst ps args with
+              | Ok result_tail => 
+                  Ok (arg :: result_tail)
+              | Err e => Err e
+              end
+            else Err Err_TypeMismatch
+          | None =>
+              (* T_Hole заменяется соответствующим аргументом. *)
+              match unify_generic_list_aux (S position) ((vn, arg) :: tvlst) ps args with
+              | Ok result_tail => 
+                  Ok (arg :: result_tail)
+              | Err e => Err e
+              end
           end
-        else if type_beq p arg then
+      | _ =>
+        if type_beq p arg then
           (* Не T_Hole допускается только при совпадении с аргументом. *)
-          match unify_generic_list_aux (S position) ps args with
-          | Ok result_tail =>
-              Ok (p :: result_tail)
+          match unify_generic_list_aux (S position) tvlst ps args with
+          | Ok result_tail => Ok (p :: result_tail)
           | Err e => Err e
           end
         else
           Err (Err_TypeMismatch)
+      end
     end.
 
 Definition unify_generic_list
     (plst arglst : list type)
     : result (list type) :=
-  unify_generic_list_aux 0 plst arglst.
+  unify_generic_list_aux 0 [] plst arglst.
 
 (* Функция вывода и проверки типов *)
 Fixpoint infer_type_expr (Γ : type_context) (tm : expr) : result type :=
@@ -580,7 +605,7 @@ Fixpoint unfold_type
       | Some T' => Ok T'
       | None => Err (Err_UnboundType X)
       end
-  | T_Hole => Ok T_Hole
+  | T_Hole vn => Ok (T_Hole vn)
   | T_Elem e => Ok (T_Elem e)
   | T_Prim p => Ok (T_Prim p)
 
@@ -726,14 +751,6 @@ Definition compile_prog (inprg : prog) : result Prg_Result :=
   | Err e => Err e
   end.
 
-
-Example example_good_prog := [
-  C_NewTypeAbbr "A" (T_Elem "a");
-  C_Eval (E_TRep (T_Abbr "A"))
-].
-Compute (compile_prog example_good_prog).
-
-
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog := [
   C_DeclVar "oneprod" (E_Prod [E_Elem "bla"]); 
@@ -753,7 +770,7 @@ Compute (compile_prog example_good_prog2).
 (* Хорошая программа -  объявление индуктивного типа натуральных чисел *)
 Example example_good_prog3 := [
   C_DeclCombVariant "Option" [T_Elem "None"] [];
-  C_DeclCombVariant "Option" [T_Elem "Some"] [T_Hole];
+  C_DeclCombVariant "Option" [T_Elem "Some"] [T_Hole "a"];
   C_CloseCombType "Option";
   C_DeclCombVariant "Nat" [T_Elem "Zero"] [];
   C_DeclCombVariant "Nat" [T_Elem "Succ"] [T_Comb "Nat" []];
@@ -762,10 +779,34 @@ Example example_good_prog3 := [
 ].
 Compute (compile_prog example_good_prog3).
 
+(* Хорошая программа - типы комбинаций с параметрами произвольных типов *)
+Example example_good_prog4 := [
+  C_DeclCombVariant "Foo" [T_Elem "Foo"] [T_Hole "a"; T_Hole "b"];
+  C_CloseCombType "Foo";
+  C_Eval (E_Comb [E_Elem "Foo"] [E_Unit; (E_Prim Prm_Left)])
+].
+Compute (compile_prog example_good_prog4).
+
+(* Хорошая программа - типы комбинаций с параметрами одинаковых типов *)
+Example example_good_prog5 := [
+  C_DeclCombVariant "Foo" [T_Elem "Foo"] [T_Hole "a"; T_Hole "a"];
+  C_CloseCombType "Foo";
+  C_Eval (E_Comb [E_Elem "Foo"] [E_Unit; E_Unit])
+].
+Compute (compile_prog example_good_prog5).
+
+(* Плохая программа - несовпадение типов параметров *)
+Example example_bad_prog0 := [
+  C_DeclCombVariant "Foo" [T_Elem "Foo"] [T_Hole "a"; T_Hole "a"];
+  C_CloseCombType "Foo";
+  C_Eval (E_Comb [E_Elem "Foo"] [E_Unit; E_Elem "bla"])
+].
+Compute (compile_prog example_bad_prog0).
+
 (* Плохая программа - undefined variable bad *)
-Example example_bad_prog := [
+Example example_bad_prog1 := [
   C_DeclVar "bed" (E_Elem "()"); C_Eval (E_Var "bad")].
-Compute (compile_prog example_bad_prog).
+Compute (compile_prog example_bad_prog1).
 
 (* Плохая программа - затенение переменных *)
 Example example_bad_prog2 := [
