@@ -49,7 +49,8 @@ Inductive expr : Type :=
   | E_Prim : prim -> expr
   | E_TRep : type -> expr
   | E_Prod : list expr -> expr
-  | E_Comb : list expr -> list expr -> expr.
+  | E_Comb : list expr -> list expr -> expr
+  | E_App : expr -> expr -> expr.
 
 (* Синтаксис значений *)
 Inductive value : Type :=
@@ -68,6 +69,7 @@ Inductive command : Type :=
   | C_Eval : expr -> command.
 
 Inductive error : Type :=
+  | Err_NotImplemented : error
   | Err_UnboundVar : VarName -> error
   | Err_UnboundType : TypeName -> error
   | Err_DuplicateVar : VarName -> error
@@ -79,7 +81,9 @@ Inductive error : Type :=
   | Err_UnexpectedVar : VarName -> error
   | Err_CombTypeClosed : TypeName -> error
   | Err_TypeListMismatch : list type -> list type -> error
-  | Err_UsePrimInDeclComb : type -> error.
+  | Err_UsePrimInDeclComb : type -> error
+  | TypeErr_InvalidApp : type -> type -> error
+  | ExprErr_InvalidApp : expr -> expr -> error.
 
 Inductive result (A : Type) : Type :=
   | Ok : A -> result A
@@ -230,12 +234,12 @@ Fixpoint type_beq (it1 it2 : type) : bool :=
 Fixpoint type_comb_lookup 
       (Γ : type_context) 
       (lst : list type) 
-      {struct Γ} : option (TypeName * list type) :=
+      {struct Γ} : option (TypeName * list type * list type) :=
   match Γ with
   | [] => None
   | (BindCombType TN LST PARAM) :: rest => 
       if list_eqb type_beq lst LST then 
-        Some (TN, PARAM)
+        Some (TN, LST, PARAM)
       else 
         type_comb_lookup rest lst
   | _ :: rest => type_comb_lookup rest lst
@@ -314,7 +318,7 @@ Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : result type :=
         end
     | T_Comb tn lst => 
       match norm_list norm_type Γ lst with 
-      | Ok P => Ok (T_Comb tn P) 
+      | Ok nrmlst => Ok (T_Comb tn nrmlst) 
       | Err e => Err e
       end
     | _ => Ok T
@@ -398,8 +402,16 @@ Definition unify_generic_list
     : result (list type) :=
   unify_generic_list_aux 0 [] plst arglst plst arglst.
 
+Definition infer_type_prim_app (Γ : type_context) (t pt : type) : result type :=
+  match t, pt with
+  | T_Prod (x :: xs), T_Prim Prm_Left => norm_type Γ x
+  | T_Prod xs, T_Prim Prm_Right => norm_type Γ (last xs T_Unit)
+  | _, _ => Err (TypeErr_InvalidApp t pt)
+  end.
+
+
 (* Функция вывода и проверки типов *)
-Fixpoint infer_type_expr (Γ : type_context) (tm : expr) : result type :=
+Fixpoint infer_type_expr (Γ : type_context) (tm : expr) {struct tm} : result type :=
   match tm with
   | E_Var x => 
       match var_type_lookup Γ x with
@@ -408,48 +420,59 @@ Fixpoint infer_type_expr (Γ : type_context) (tm : expr) : result type :=
       end 
   | E_Elem u => Ok (T_Elem u)
   | E_Prim p => Ok (T_Prim p)
-  | E_TRep T => 
-      match norm_type Γ T with 
-      | Ok NT => Ok (T_TRep NT)
-      | Err e => Err e
-      end
+  | E_TRep T => norm_type Γ (T_TRep T)
   | E_Prod [] => Ok T_Unit
   | E_Prod [x] => 
       match infer_type_expr Γ x with
-      | Ok T => Ok T
+      | Ok T => norm_type Γ T
       | Err e => Err e
       end
   | E_Prod (p1 :: ps) =>
       match infer_list infer_type_expr Γ (p1 :: ps) with
-      | Ok P => Ok (T_Prod P) 
+      | Ok P => norm_type Γ (T_Prod P)
       | Err e => Err e
       end
-  | E_Comb ctorlst arglst =>
-      match infer_comb_ctor_type Γ ctorlst with
-      | Ok (tn, plst) =>
+  | E_Comb ctorlst arglst => 
+      match infer_comb_type_info Γ ctorlst arglst with
+      | Ok (tn, ctortypes, argtypes) => Ok (T_Comb tn argtypes)
+      | Err e => Err e
+      end
+  | E_App (E_Comb ctorlst arglst) (E_Prim prm) => 
+      match infer_comb_type_info Γ ctorlst arglst with
+      | Ok (tn, ctortypes, argtypes) =>
+        match prm with
+        | Prm_Left => norm_type Γ (T_Prod ctortypes)
+        | Prm_Right => norm_type Γ (T_Prod argtypes)
+        end
+      | Err e => Err e
+      end
+  | E_App a b => 
+    match infer_type_expr Γ a, infer_type_expr Γ b with
+    | Ok ta, Ok tb => infer_type_prim_app Γ ta tb
+    | Err e, _ => Err e
+    | Ok _, Err e => Err e
+    end
+  end
+with infer_comb_type_info Γ ctorlst arglst : result (TypeName * list type * list type) :=
+  match infer_list infer_type_expr Γ ctorlst with
+  | Ok ctortypes => 
+      match type_comb_lookup Γ ctortypes with
+      | Some (tn, _, plst) => 
           match infer_list infer_type_expr Γ arglst with
           | Ok argtypes =>
               match unify_generic_list plst argtypes with
-              | Ok reslst => Ok (T_Comb tn reslst)
+              | Ok reslst => Ok (tn, ctortypes, reslst)
               | Err e => Err e
               end
           | Err e => Err e
           end
-      | Err e => Err e
-      end
-  end
-with infer_comb_ctor_type Γ lst : result (TypeName * list type) :=
-  match infer_list infer_type_expr Γ lst with
-  | Ok wtlst => 
-      match type_comb_lookup Γ wtlst with
-      | Some p => Ok p
       | None => Err (Err_UnknownCombSignature)
       end
   | Err e => Err e
   end.
 
 (* Функция вычисления для выражений *) 
-Fixpoint eval_expr (Sigma : eval_context) (tm : expr) : result value :=
+Fixpoint eval_expr (Sigma : eval_context) (tm : expr) {struct tm} : result value :=
   match tm with
   | E_Var x =>
       match var_value_lookup Sigma x with
@@ -481,6 +504,26 @@ Fixpoint eval_expr (Sigma : eval_context) (tm : expr) : result value :=
           | Err e => Err e
           end
       | Err e => Err e
+      end
+  | E_App a b =>
+      match eval_expr Sigma a, eval_expr Sigma b with
+      | Ok (V_Prod (x :: xs)), Ok (V_Prim Prm_Left) => Ok x
+      | Ok (V_Prod xs), Ok (V_Prim Prm_Right) => Ok (last xs V_Unit)
+      | Ok (V_Comb ctor _), Ok (V_Prim Prm_Left) => 
+        match ctor with
+        | [] => Ok V_Unit
+        | [x] => Ok x
+        | xs => Ok (V_Prod xs)
+        end
+      | Ok (V_Comb _ args), Ok (V_Prim Prm_Right) =>
+        match args with
+        | [] => Ok V_Unit
+        | [x] => Ok x
+        | xs => Ok (V_Prod xs)
+        end
+      | Ok _, Ok _ => Err (ExprErr_InvalidApp a b)
+      | Err e, _ => Err e
+      | Ok _, Err e => Err e 
       end
   end.
 
@@ -689,6 +732,15 @@ Fixpoint unfold_expr
           end
       | Err e => Err e
       end
+  | E_App a b =>
+    match unfold_expr Sigma Delta a with
+    | Ok x => 
+        match unfold_expr Sigma Delta b with
+        | Ok y => Ok (E_App x y)
+        | Err e => Err e
+        end
+    | Err e => Err e
+    end
   end.
 
 Fixpoint unfold_prog_aux
@@ -778,11 +830,11 @@ Definition compile_prog (inprg : prog) : result Prg_Result :=
   end.
 
 (* Тривиальный пример хорошей программы *)
-Example example_good_prog := [
+Example example_good_prog0 := [
   C_DeclVar "oneprod" (E_Prod [E_Elem "bla"]); 
-  C_DeclVar "myvar" (E_Prod [E_TRep (T_Prod [T_Elem "one"]); E_Elem "0"; E_Var "oneprod"; E_Elem "2"; E_Elem "VAL"]);
-  C_Eval (E_TRep (T_Prod [T_Elem "one"])); C_Eval (E_Var "myvar") ].
-Compute (compile_prog example_good_prog).
+  C_DeclVar "myvar" (E_Prod [E_TRep (T_Prod [T_Elem "one"]); E_Elem "0"; E_Elem "2"; E_Var "oneprod"]);
+  C_Eval (E_Prod [E_App (E_Var "myvar") (E_Prim Prm_Left); E_App (E_Var "myvar") (E_Prim Prm_Right)]) ].
+Compute (compile_prog example_good_prog0).
 
 (* Хорошая программа -  объявление типов-комбинаций *)
 Example example_good_prog2 := [
@@ -822,6 +874,20 @@ Example example_good_prog5 := [
 ].
 Compute (compile_prog example_good_prog5).
 
+(* Хорошая программа -  применение E_Prim к комбинации *)
+Example example_good_prog6 := [
+  C_DeclCombVariant "Option" [T_Elem "None"] [];
+  C_DeclCombVariant "Option" [T_Elem "Some"] [T_Hole "a"];
+  C_CloseCombType "Option";
+  C_DeclCombVariant "Nat" [T_Elem "Zero"] [];
+  C_DeclCombVariant "Nat" [T_Elem "Succ"; T_Comb "Nat" []] [];
+  C_CloseCombType "Nat";
+  C_DeclVar "zero" (E_Comb [E_Elem "Zero"] []);
+  C_DeclVar "comb" (E_Comb [E_Elem "Some"] [E_Comb [E_Elem "Succ"; E_Var "zero"] []]);
+  C_Eval (E_App (E_Var "comb") (E_Prim Prm_Right))
+].
+Compute (compile_prog example_good_prog6).
+
 (* Плохая программа - несоблюдение ограничений типов *)
 Example example_bad_prog0 := [
   C_DeclCombVariant "Foo" [T_Elem "Foo"] [T_Hole "a"; T_Hole "a"];
@@ -832,14 +898,14 @@ Compute (compile_prog example_bad_prog0).
 
 (* Плохая программа - undefined variable bad *)
 Example example_bad_prog1 := [
-  C_DeclVar "bed" (E_Elem "()"); C_Eval (E_Var "bad")].
+  C_DeclVar "bed" (E_Elem "()"); 
+  C_Eval (E_Var "bad")].
 Compute (compile_prog example_bad_prog1).
 
 (* Плохая программа - затенение переменных *)
 Example example_bad_prog2 := [
   C_DeclVar "input" (E_Elem "bla");
-  C_DeclVar "input" (E_Prod [E_Elem "0"; E_Elem "2"; E_Elem "VAL"]);
-  C_Eval (E_Var "myvar")
+  C_DeclVar "input" (E_Prod [E_Elem "0"; E_Elem "2"; E_Elem "VAL"])
 ].
 Compute (compile_prog example_bad_prog2).
 
@@ -852,7 +918,7 @@ Example example_bad_prog3 : prog := [
 ].
 Compute (compile_prog example_bad_prog3).
 
-(* Плохая программа - объявление типов комбинаций с одинаковым набором типов *)
+(* Плохая программа - объявление типов комбинаций с одинаковым конструктором данных *)
 Example example_bad_prog4 : prog := [
   C_NewTypeAbbr "TP" (T_Prod [T_Elem "Nat"]);
   C_DeclCombVariant "NatZero" [T_Elem "Zero"; T_Elem "Nat"] [];
@@ -870,7 +936,7 @@ Example example_bad_prog5 : prog := [
 ].
 Compute (compile_prog example_bad_prog5).
 
-(* Плохая программа - попытка использовать T_Prim в конструкторе для типа комбинации 
+(* Плохая программа - попытка использовать T_Prim в конструкторе данных для типа комбинации 
    в объявлении типа комбинации *)
 Example example_bad_prog6 : prog := [
   C_DeclCombVariant "Bar" [T_Elem "a"; T_Prim Prm_Left] []
@@ -883,3 +949,10 @@ Example example_bad_prog7 : prog := [
   C_DeclCombVariant "Bar" [T_Elem "a"] [T_Prim Prm_Right]
 ].
 Compute (compile_prog example_bad_prog7).
+
+(* Плохая программа - ошибочное применение Prm_Left *)
+Example example_good_prog8 := [
+  C_DeclVar "myvar" (E_Prod []);
+  C_Eval (E_App (E_Var "myvar") (E_Prim Prm_Left))].
+Compute (compile_prog example_good_prog8).
+
