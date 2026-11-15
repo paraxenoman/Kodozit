@@ -776,9 +776,10 @@ Example example_good_prog3 := [
   C_DeclCombVariant "Option" [T_Elem "Some"] [T_Hole "a"];
   C_CloseCombType "Option";
   C_DeclCombVariant "Nat" [T_Elem "Zero"] [];
-  C_DeclCombVariant "Nat" [T_Elem "Succ"] [T_Comb "Nat" []];
+  C_DeclCombVariant "Nat" [T_Elem "Succ"; T_Comb "Nat" []] [];
   C_CloseCombType "Nat";
-  C_Eval (E_Comb [E_Elem "Some"] [E_Comb [E_Elem "Zero"] []])
+  C_DeclVar "zero" (E_Comb [E_Elem "Zero"] []);
+  C_Eval (E_Comb [E_Elem "Some"] [E_Comb [E_Elem "Succ"; E_Var "zero"] []])
 ].
 Compute (compile_prog example_good_prog3).
 
