@@ -78,7 +78,8 @@ Inductive error : Type :=
   | Err_TypeMismatch : type -> type -> error
   | Err_UnexpectedVar : VarName -> error
   | Err_CombTypeClosed : TypeName -> error
-  | Err_TypeListMismatch : list type -> list type -> error.
+  | Err_TypeListMismatch : list type -> list type -> error
+  | Err_UsePrimInDeclComb : type -> error.
 
 Inductive result (A : Type) : Type :=
   | Ok : A -> result A
@@ -173,6 +174,28 @@ Fixpoint norm_list
         | Ok nrmpts => Ok (nrmpt :: nrmpts)
         | Err e => Err e
         end
+    | Err e => Err e
+    end
+  end.
+
+Fixpoint norm_comb_list 
+      (f : type_context -> type -> result type) 
+      (Γ : type_context) 
+      (ts : list type) 
+      : result (list type) :=
+  match ts with
+  | [] => Ok []
+  | t :: rest =>
+    match f Γ t with
+    | Ok nrmpt =>
+      match nrmpt with
+      | T_Prim _ => Err (Err_UsePrimInDeclComb nrmpt)
+      | _ =>
+        match norm_comb_list f Γ rest with
+        | Ok nrmpts => Ok (nrmpt :: nrmpts)
+        | Err e => Err e
+        end
+      end
     | Err e => Err e
     end
   end.
@@ -503,12 +526,12 @@ Definition exec_command (st : machine_state) (cmd : command) : result machine_st
       if type_abbr_declared Γ tn then
         Err (Err_DuplicateType tn)
       else
-      match norm_list norm_type Γ lst with
+      match norm_comb_list norm_type Γ lst with
       | Ok nrmlst =>
         match type_comb_lookup Γ nrmlst with
         | Some _ => Err (Err_DuplicateCombSignature tn lst)
         | None => 
-            match norm_list norm_type Γ args with
+            match norm_comb_list norm_type Γ args with
             | Ok nrmargs =>
                 Ok {| 
                     ms_type_ctx := (BindCombType tn nrmlst nrmargs :: Γ);
@@ -766,7 +789,7 @@ Example example_good_prog2 := [
   C_DeclCombVariant "Bool" [T_Elem "true"] [];
   C_DeclCombVariant "Bool" [T_Elem "false"] [];
   C_CloseCombType "Bool";
-  C_Eval (E_Comb [E_Elem "false"] [])
+  C_Eval (E_Comb [E_Elem "true"] [])
 ].
 Compute (compile_prog example_good_prog2).
 
@@ -846,3 +869,17 @@ Example example_bad_prog5 : prog := [
   C_Eval (E_Comb [E_Elem "false"] [])
 ].
 Compute (compile_prog example_bad_prog5).
+
+(* Плохая программа - попытка использовать T_Prim в конструкторе для типа комбинации 
+   в объявлении типа комбинации *)
+Example example_bad_prog6 : prog := [
+  C_DeclCombVariant "Bar" [T_Elem "a"; T_Prim Prm_Left] []
+].
+Compute (compile_prog example_bad_prog6).
+
+(* Плохая программа - попытка использовать T_Prim в параметрах типа комбинации 
+   в объявлении типа комбинации *)
+Example example_bad_prog7 : prog := [
+  C_DeclCombVariant "Bar" [T_Elem "a"] [T_Prim Prm_Right]
+].
+Compute (compile_prog example_bad_prog7).
