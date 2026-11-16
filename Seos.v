@@ -405,7 +405,7 @@ Fixpoint type_size (T : type) : nat :=
 (*
   Структурная унификация одного типа-шаблона с фактическим типом.
 
-  pattern: тип, который может содержать T_Hole.
+  ptrn: тип, который может содержать T_Hole.
 
   actual: фактический тип аргумента.
 
@@ -414,7 +414,7 @@ Fixpoint type_size (T : type) : nat :=
 Fixpoint unify_type_fuel
     (fuel : nat)
     (subst : type_subst)
-    (pattern actual : type)
+    (ptrn actual : type)
   : result type_subst :=
 
   match fuel with
@@ -422,7 +422,7 @@ Fixpoint unify_type_fuel
       Err Err_InvalidType
 
   | S fuel' =>
-      match pattern with
+      match ptrn with
 
       (* Унификация типовой дыры. *)
       | T_Hole x =>
@@ -445,10 +445,10 @@ Fixpoint unify_type_fuel
           | T_Abbr Y =>
               if eqb X Y
               then Ok subst
-              else Err (Err_TypeMismatch pattern actual)
+              else Err (Err_TypeMismatch ptrn actual)
 
           | _ =>
-              Err (Err_TypeMismatch pattern actual)
+              Err (Err_TypeMismatch ptrn actual)
           end
 
       | T_Elem e1 =>
@@ -456,10 +456,10 @@ Fixpoint unify_type_fuel
           | T_Elem e2 =>
               if eqb e1 e2
               then Ok subst
-              else Err (Err_TypeMismatch pattern actual)
+              else Err (Err_TypeMismatch ptrn actual)
 
           | _ =>
-              Err (Err_TypeMismatch pattern actual)
+              Err (Err_TypeMismatch ptrn actual)
           end
 
       | T_Prim p1 =>
@@ -467,46 +467,46 @@ Fixpoint unify_type_fuel
           | T_Prim p2 =>
               if prim_beq p1 p2
               then Ok subst
-              else Err (Err_TypeMismatch pattern actual)
+              else Err (Err_TypeMismatch ptrn actual)
 
           | _ =>
-              Err (Err_TypeMismatch pattern actual)
+              Err (Err_TypeMismatch ptrn actual)
           end
 
-      | T_TRep pattern1 =>
+      | T_TRep ptrn1 =>
           match actual with
           | T_TRep actual1 =>
               unify_type_fuel
                 fuel'
                 subst
-                pattern1
+                ptrn1
                 actual1
 
           | _ =>
-              Err (Err_TypeMismatch pattern actual)
+              Err (Err_TypeMismatch ptrn actual)
           end
 
-      | T_Prod patterns =>
+      | T_Prod ptrns =>
           match actual with
           | T_Prod actuals =>
 
               let fix unify_product_elements
                   (subst0 : type_subst)
-                  (patterns0 actuals0 : list type)
-                  {struct patterns0}
+                  (ptrns0 actuals0 : list type)
+                  {struct ptrns0}
                   : result type_subst :=
 
-                  match patterns0, actuals0 with
+                  match ptrns0, actuals0 with
                   | [], [] =>
                       Ok subst0
 
-                  | pattern0 :: pattern_rest,
+                  | ptrn0 :: ptrn_rest,
                     actual0 :: actual_rest =>
 
                       match unify_type_fuel
                               fuel'
                               subst0
-                              pattern0
+                              ptrn0
                               actual0
                       with
                       | Err e =>
@@ -515,49 +515,49 @@ Fixpoint unify_type_fuel
                       | Ok subst1 =>
                           unify_product_elements
                             subst1
-                            pattern_rest
+                            ptrn_rest
                             actual_rest
                       end
 
                   | _, _ =>
                       Err
                         (Err_TypeListMismatch
-                           patterns
+                           ptrns
                            actuals)
                   end
 
               in unify_product_elements
                    subst
-                   patterns
+                   ptrns
                    actuals
 
           | _ =>
-              Err (Err_TypeMismatch pattern actual)
+              Err (Err_TypeMismatch ptrn actual)
           end
 
-      | T_Comb pattern_name pattern_args =>
+      | T_Comb ptrn_name ptrn_args =>
           match actual with
           | T_Comb actual_name actual_args =>
 
-              if eqb pattern_name actual_name
+              if eqb ptrn_name actual_name
               then
                 let fix unify_comb_arguments
                     (subst0 : type_subst)
-                    (patterns0 actuals0 : list type)
-                    {struct patterns0}
+                    (ptrns0 actuals0 : list type)
+                    {struct ptrns0}
                     : result type_subst :=
 
-                    match patterns0, actuals0 with
+                    match ptrns0, actuals0 with
                     | [], [] =>
                         Ok subst0
 
-                    | pattern0 :: pattern_rest,
+                    | ptrn0 :: ptrn_rest,
                       actual0 :: actual_rest =>
 
                         match unify_type_fuel
                                 fuel'
                                 subst0
-                                pattern0
+                                ptrn0
                                 actual0
                         with
                         | Err e =>
@@ -566,39 +566,39 @@ Fixpoint unify_type_fuel
                         | Ok subst1 =>
                             unify_comb_arguments
                               subst1
-                              pattern_rest
+                              ptrn_rest
                               actual_rest
                         end
 
                     | _, _ =>
                         Err
                           (Err_TypeListMismatch
-                             pattern_args
+                             ptrn_args
                              actual_args)
                     end
 
                 in unify_comb_arguments
                      subst
-                     pattern_args
+                     ptrn_args
                      actual_args
 
               else
-                Err (Err_TypeMismatch pattern actual)
+                Err (Err_TypeMismatch ptrn actual)
 
           | _ =>
-              Err (Err_TypeMismatch pattern actual)
+              Err (Err_TypeMismatch ptrn actual)
           end
       end
   end.
 
 Definition unify_type
     (subst : type_subst)
-    (pattern actual : type)
+    (ptrn actual : type)
   : result type_subst :=
   unify_type_fuel
-    (S (type_size pattern))
+    (S (type_size ptrn))
     subst
-    pattern
+    ptrn
     actual.
 
 (*
@@ -610,35 +610,35 @@ Definition unify_type
 *)
 Fixpoint unify_type_list
     (subst : type_subst)
-    (patterns actuals : list type)
-    (original_patterns original_actuals : list type)
-    {struct patterns}
+    (ptrns actuals : list type)
+    (original_ptrns original_actuals : list type)
+    {struct ptrns}
   : result type_subst :=
 
-  match patterns, actuals with
+  match ptrns, actuals with
   | [], [] =>
       Ok subst
 
-  | pattern :: pattern_rest,
+  | ptrn :: ptrn_rest,
     actual :: actual_rest =>
 
-      match unify_type subst pattern actual with
+      match unify_type subst ptrn actual with
       | Err e =>
           Err e
 
       | Ok subst' =>
           unify_type_list
             subst'
-            pattern_rest
+            ptrn_rest
             actual_rest
-            original_patterns
+            original_ptrns
             original_actuals
       end
 
   | _, _ =>
       Err
         (Err_TypeListMismatch
-           original_patterns
+           original_ptrns
            original_actuals)
   end.
 
