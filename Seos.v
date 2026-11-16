@@ -356,70 +356,9 @@ Definition value_beq (fnteq : type -> type -> result bool) (fveq : value -> valu
   | _, _ => Ok false
   end.
 
-(*
-Fixpoint type_hole_lookup (tvlst : list (string * type)) (x : string) : option type :=
-  match tvlst with
-  | [] => None
-  | (y, T) :: rest => 
-      if eqb x y then
-        Some T 
-      else 
-        type_hole_lookup rest x
-  end.
-
-Fixpoint unify_generic_list_aux
-    (position : nat)
-    (tvlst : list (string * type))
-    (plst arglst : list type)
-    (origplst origarglst : list type)
-    : result (list type) :=
-    match plst, arglst with
-    | [], [] => Ok []
-    | [], _ :: _ => Err (Err_TypeListMismatch origplst origarglst)
-    | _ :: _, [] => Err (Err_TypeListMismatch origplst origarglst)
-    | p :: ps, arg :: args =>
-      match p with
-      | T_Hole vn =>
-          match type_hole_lookup tvlst vn with
-          | Some T =>
-            if type_beq T arg then
-              match unify_generic_list_aux (S position) tvlst ps args origplst origarglst with
-              | Ok result_tail => 
-                  Ok (arg :: result_tail)
-              | Err e => Err e
-              end
-            else Err (Err_TypeMismatch T arg)
-          | None =>
-              (* T_Hole заменяется соответствующим аргументом. *)
-              match unify_generic_list_aux (S position) ((vn, arg) :: tvlst) ps args origplst origarglst with
-              | Ok result_tail => 
-                  Ok (arg :: result_tail)
-              | Err e => Err e
-              end
-          end
-      | _ =>
-        if type_beq p arg then
-          (* Не T_Hole допускается только при совпадении с аргументом. *)
-          match unify_generic_list_aux (S position) tvlst ps args origplst origarglst with
-          | Ok result_tail => Ok (p :: result_tail)
-          | Err e => Err e
-          end
-        else
-          Err (Err_TypeMismatch p arg)
-      end
-    end.
-
-Definition unify_generic_list
-    (plst arglst : list type)
-    : result (list type) :=
-  unify_generic_list_aux 0 [] plst arglst plst arglst.
-*)
-
-
 (* Подстановка типовых дыр. *)
 Definition type_subst : Type :=
   list (string * type).
-
 
 Fixpoint type_hole_lookup
     (subst : type_subst)
@@ -433,7 +372,6 @@ Fixpoint type_hole_lookup
       then Some T
       else type_hole_lookup rest x
   end.
-
 
 (*
   Размер типа используется только для получения гарантированно
@@ -464,18 +402,14 @@ Fixpoint type_size (T : type) : nat :=
            Ts)
   end.
 
-
 (*
   Структурная унификация одного типа-шаблона с фактическим типом.
 
-  pattern:
-    тип, который может содержать T_Hole.
+  pattern: тип, который может содержать T_Hole.
 
-  actual:
-    фактический тип аргумента.
+  actual: фактический тип аргумента.
 
-  Результат:
-    расширенная подстановка типовых дыр.
+  Результат: расширенная подстановка типовых дыр.
 *)
 Fixpoint unify_type_fuel
     (fuel : nat)
@@ -657,7 +591,6 @@ Fixpoint unify_type_fuel
       end
   end.
 
-
 Definition unify_type
     (subst : type_subst)
     (pattern actual : type)
@@ -667,7 +600,6 @@ Definition unify_type
     subst
     pattern
     actual.
-
 
 (*
   Унификация списка шаблонов со списком фактических типов.
@@ -710,7 +642,6 @@ Fixpoint unify_type_list
            original_actuals)
   end.
 
-
 (*
   Основной интерфейс унификации.
 
@@ -737,13 +668,12 @@ Definition unify_generic_list
       Err e
   end.
 
-Definition infer_type_prim_app (Γ : type_context) (t pt : type) : result type :=
+Definition infer_type_app (Γ : type_context) (t pt : type) : result type :=
   match t, pt with
   | T_Prod (x :: xs), T_Prim Prm_Left => norm_type Γ x
   | T_Prod xs, T_Prim Prm_Right => norm_type Γ (last xs T_Unit)
   | _, _ => Err (TypeErr_InvalidApp t pt)
   end.
-
 
 (* Функция вывода и проверки типов *)
 Fixpoint infer_type_expr (Γ : type_context) (tm : expr) {struct tm} : result type :=
@@ -789,7 +719,7 @@ Fixpoint infer_type_expr (Γ : type_context) (tm : expr) {struct tm} : result ty
       | Err e => Err e
       | tbres =>
         match tares, tbres with
-        | Ok ta, Ok tb => infer_type_prim_app Γ ta tb
+        | Ok ta, Ok tb => infer_type_app Γ ta tb
         | Err e, _ => Err e
         | Ok _, Err e => Err e
         end
@@ -973,7 +903,6 @@ Definition type_def_context : Type :=
 Definition expr_def_context : Type :=
   list (VarName * expr).
 
-
 Fixpoint lookup_type_def
     (Delta : type_def_context)
     (X : TypeName)
@@ -985,7 +914,6 @@ Fixpoint lookup_type_def
       then Some T
       else lookup_type_def rest X
   end.
-
 
 Fixpoint lookup_expr_def
     (Sigma : expr_def_context)
@@ -1422,3 +1350,4 @@ Example test_unify_product_length_error :
 Proof.
   reflexivity.
 Qed.
+
