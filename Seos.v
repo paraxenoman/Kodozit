@@ -80,6 +80,8 @@ Inductive error : Type :=
   | Err_TypeMismatch : type -> type -> error
   | Err_UnexpectedVar : VarName -> error
   | Err_CombTypeClosed : TypeName -> error
+  | Err_CloseUnknownCombType : TypeName -> error
+  | Err_CombTypeAlreadyClosed : TypeName -> error
   | Err_TypeListMismatch : list type -> list type -> error
   | Err_UsePrimInDeclComb : type -> error
   | TypeErr_InvalidApp : type -> type -> error
@@ -182,6 +184,16 @@ Fixpoint norm_list
     end
   end.
 
+Fixpoint contains_prim (T : type) : bool :=
+  match T with
+  | T_Prim _ => true
+  | T_TRep T => contains_prim T
+  | T_Prod Ts => existsb contains_prim Ts
+  | T_Comb _ Ts => existsb contains_prim Ts
+  | _ => false
+  end.
+
+
 Fixpoint norm_comb_list 
       (f : type_context -> type -> result type) 
       (Γ : type_context) 
@@ -192,14 +204,13 @@ Fixpoint norm_comb_list
   | t :: rest =>
     match f Γ t with
     | Ok nrmpt =>
-      match nrmpt with
-      | T_Prim _ => Err (Err_UsePrimInDeclComb nrmpt)
-      | _ =>
+      if contains_prim nrmpt then
+        Err (Err_UsePrimInDeclComb nrmpt)
+      else
         match norm_comb_list f Γ rest with
         | Ok nrmpts => Ok (nrmpt :: nrmpts)
         | Err e => Err e
         end
-      end
     | Err e => Err e
     end
   end.
@@ -345,6 +356,7 @@ Definition value_beq (fnteq : type -> type -> result bool) (fveq : value -> valu
   | _, _ => Ok false
   end.
 
+(*
 Fixpoint type_hole_lookup (tvlst : list (string * type)) (x : string) : option type :=
   match tvlst with
   | [] => None
@@ -401,6 +413,329 @@ Definition unify_generic_list
     (plst arglst : list type)
     : result (list type) :=
   unify_generic_list_aux 0 [] plst arglst plst arglst.
+*)
+
+
+(* Подстановка типовых дыр. *)
+Definition type_subst : Type :=
+  list (string * type).
+
+
+Fixpoint type_hole_lookup
+    (subst : type_subst)
+    (x : string)
+  : option type :=
+  match subst with
+  | [] => None
+
+  | (y, T) :: rest =>
+      if eqb x y
+      then Some T
+      else type_hole_lookup rest x
+  end.
+
+
+(*
+  Размер типа используется только для получения гарантированно
+  достаточной глубины структурного обхода.
+
+  Это не произвольный fuel: его значение вычисляется из самого типа.
+*)
+Fixpoint type_size (T : type) : nat :=
+  match T with
+  | T_Hole _ => 1
+  | T_Abbr _ => 1
+  | T_Elem _ => 1
+  | T_Prim _ => 1
+
+  | T_TRep T1 =>
+      S (type_size T1)
+
+  | T_Prod Ts =>
+      S (fold_right
+           (fun T n => type_size T + n)
+           0
+           Ts)
+
+  | T_Comb _ Ts =>
+      S (fold_right
+           (fun T n => type_size T + n)
+           0
+           Ts)
+  end.
+
+
+(*
+  Структурная унификация одного типа-шаблона с фактическим типом.
+
+  pattern:
+    тип, который может содержать T_Hole.
+
+  actual:
+    фактический тип аргумента.
+
+  Результат:
+    расширенная подстановка типовых дыр.
+*)
+Fixpoint unify_type_fuel
+    (fuel : nat)
+    (subst : type_subst)
+    (pattern actual : type)
+  : result type_subst :=
+
+  match fuel with
+  | 0 =>
+      Err Err_InvalidType
+
+  | S fuel' =>
+      match pattern with
+
+      (* Унификация типовой дыры. *)
+      | T_Hole x =>
+          match type_hole_lookup subst x with
+
+          (* Дыра уже была связана. *)
+          | Some T =>
+              if type_beq T actual
+              then Ok subst
+              else Err (Err_TypeMismatch T actual)
+
+          (* Первое вхождение дыры. *)
+          | None =>
+              Ok ((x, actual) :: subst)
+          end
+
+      (* Аббревиатуры должны быть нормализованы заранее. *)
+      | T_Abbr X =>
+          match actual with
+          | T_Abbr Y =>
+              if eqb X Y
+              then Ok subst
+              else Err (Err_TypeMismatch pattern actual)
+
+          | _ =>
+              Err (Err_TypeMismatch pattern actual)
+          end
+
+      | T_Elem e1 =>
+          match actual with
+          | T_Elem e2 =>
+              if eqb e1 e2
+              then Ok subst
+              else Err (Err_TypeMismatch pattern actual)
+
+          | _ =>
+              Err (Err_TypeMismatch pattern actual)
+          end
+
+      | T_Prim p1 =>
+          match actual with
+          | T_Prim p2 =>
+              if prim_beq p1 p2
+              then Ok subst
+              else Err (Err_TypeMismatch pattern actual)
+
+          | _ =>
+              Err (Err_TypeMismatch pattern actual)
+          end
+
+      | T_TRep pattern1 =>
+          match actual with
+          | T_TRep actual1 =>
+              unify_type_fuel
+                fuel'
+                subst
+                pattern1
+                actual1
+
+          | _ =>
+              Err (Err_TypeMismatch pattern actual)
+          end
+
+      | T_Prod patterns =>
+          match actual with
+          | T_Prod actuals =>
+
+              let fix unify_product_elements
+                  (subst0 : type_subst)
+                  (patterns0 actuals0 : list type)
+                  {struct patterns0}
+                  : result type_subst :=
+
+                  match patterns0, actuals0 with
+                  | [], [] =>
+                      Ok subst0
+
+                  | pattern0 :: pattern_rest,
+                    actual0 :: actual_rest =>
+
+                      match unify_type_fuel
+                              fuel'
+                              subst0
+                              pattern0
+                              actual0
+                      with
+                      | Err e =>
+                          Err e
+
+                      | Ok subst1 =>
+                          unify_product_elements
+                            subst1
+                            pattern_rest
+                            actual_rest
+                      end
+
+                  | _, _ =>
+                      Err
+                        (Err_TypeListMismatch
+                           patterns
+                           actuals)
+                  end
+
+              in unify_product_elements
+                   subst
+                   patterns
+                   actuals
+
+          | _ =>
+              Err (Err_TypeMismatch pattern actual)
+          end
+
+      | T_Comb pattern_name pattern_args =>
+          match actual with
+          | T_Comb actual_name actual_args =>
+
+              if eqb pattern_name actual_name
+              then
+                let fix unify_comb_arguments
+                    (subst0 : type_subst)
+                    (patterns0 actuals0 : list type)
+                    {struct patterns0}
+                    : result type_subst :=
+
+                    match patterns0, actuals0 with
+                    | [], [] =>
+                        Ok subst0
+
+                    | pattern0 :: pattern_rest,
+                      actual0 :: actual_rest =>
+
+                        match unify_type_fuel
+                                fuel'
+                                subst0
+                                pattern0
+                                actual0
+                        with
+                        | Err e =>
+                            Err e
+
+                        | Ok subst1 =>
+                            unify_comb_arguments
+                              subst1
+                              pattern_rest
+                              actual_rest
+                        end
+
+                    | _, _ =>
+                        Err
+                          (Err_TypeListMismatch
+                             pattern_args
+                             actual_args)
+                    end
+
+                in unify_comb_arguments
+                     subst
+                     pattern_args
+                     actual_args
+
+              else
+                Err (Err_TypeMismatch pattern actual)
+
+          | _ =>
+              Err (Err_TypeMismatch pattern actual)
+          end
+      end
+  end.
+
+
+Definition unify_type
+    (subst : type_subst)
+    (pattern actual : type)
+  : result type_subst :=
+  unify_type_fuel
+    (S (type_size pattern))
+    subst
+    pattern
+    actual.
+
+
+(*
+  Унификация списка шаблонов со списком фактических типов.
+
+  Подстановка передается от одного элемента к следующему,
+  поэтому повторные вхождения одной дыры обязаны иметь
+  одинаковый фактический тип.
+*)
+Fixpoint unify_type_list
+    (subst : type_subst)
+    (patterns actuals : list type)
+    (original_patterns original_actuals : list type)
+    {struct patterns}
+  : result type_subst :=
+
+  match patterns, actuals with
+  | [], [] =>
+      Ok subst
+
+  | pattern :: pattern_rest,
+    actual :: actual_rest =>
+
+      match unify_type subst pattern actual with
+      | Err e =>
+          Err e
+
+      | Ok subst' =>
+          unify_type_list
+            subst'
+            pattern_rest
+            actual_rest
+            original_patterns
+            original_actuals
+      end
+
+  | _, _ =>
+      Err
+        (Err_TypeListMismatch
+           original_patterns
+           original_actuals)
+  end.
+
+
+(*
+  Основной интерфейс унификации.
+
+  Для совместимости с infer_comb_type_info функция по-прежнему
+  возвращает список фактических типов.
+
+  Внутри, однако, строится полноценная структурная подстановка.
+*)
+Definition unify_generic_list
+    (plst arglst : list type)
+  : result (list type) :=
+
+  match unify_type_list
+          []
+          plst
+          arglst
+          plst
+          arglst
+  with
+  | Ok _ =>
+      Ok arglst
+
+  | Err e =>
+      Err e
+  end.
 
 Definition infer_type_prim_app (Γ : type_context) (t pt : type) : result type :=
   match t, pt with
@@ -447,10 +782,18 @@ Fixpoint infer_type_expr (Γ : type_context) (tm : expr) {struct tm} : result ty
       | Err e => Err e
       end
   | E_App a b => 
-    match infer_type_expr Γ a, infer_type_expr Γ b with
-    | Ok ta, Ok tb => infer_type_prim_app Γ ta tb
-    | Err e, _ => Err e
-    | Ok _, Err e => Err e
+    match infer_type_expr Γ a with
+    | Err e => Err e
+    | tares =>
+      match infer_type_expr Γ b with
+      | Err e => Err e
+      | tbres =>
+        match tares, tbres with
+        | Ok ta, Ok tb => infer_type_prim_app Γ ta tb
+        | Err e, _ => Err e
+        | Ok _, Err e => Err e
+        end
+      end
     end
   end
 with infer_comb_type_info Γ ctorlst arglst : result (TypeName * list type * list type) :=
@@ -587,21 +930,34 @@ Definition exec_command (st : machine_state) (cmd : command) : result machine_st
       | Err e => Err e
       end
   | C_Eval e =>
-      match infer_type_expr Γ e, eval_expr Sigma e with
-      | Ok T, Ok v => Ok {| 
-          ms_type_ctx := Γ;
-          ms_eval_ctx := Sigma;
-          ms_last_type := T;
-          ms_last_value := v |}
-      | Err er, _ => Err er
-      | _, Err er => Err er
+      match infer_type_expr Γ e with
+      | Err er => Err er
+      | tres =>
+          match eval_expr Sigma e with
+          | Err er => Err er
+          | eres =>
+            match tres, eres with
+            | Ok T, Ok v => Ok {| 
+                ms_type_ctx := Γ;
+                ms_eval_ctx := Sigma;
+                ms_last_type := T;
+                ms_last_value := v |}
+            | Err er, _ => Err er
+            | _, Err er => Err er
+            end
+          end
       end
   | C_CloseCombType tn => 
-      Ok {| 
-        ms_type_ctx := (CloseCombType tn :: Γ);
-        ms_eval_ctx := Sigma;
-        ms_last_type := ms_last_type st;
-        ms_last_value := ms_last_value st |}
+      if negb (comb_type_declared Γ tn) then
+        Err (Err_CloseUnknownCombType tn)
+      else if comb_type_closed Γ tn then 
+        Err (Err_CombTypeAlreadyClosed tn)
+      else
+        Ok {| 
+          ms_type_ctx := (CloseCombType tn :: Γ);
+          ms_eval_ctx := Sigma;
+          ms_last_type := ms_last_type st;
+          ms_last_value := ms_last_value st |}
   end.
 
 Definition prog : Type := list command.
@@ -772,14 +1128,19 @@ Fixpoint unfold_prog_aux
       end
 
   | C_DeclCombVariant tn lst args :: rest =>
-      match unfold_type Sigma Delta (T_Prod lst), unfold_type Sigma Delta (T_Prod args) with
-      | Ok (T_Prod newlst), Ok (T_Prod newargs) => 
-          match unfold_prog_aux Sigma Delta rest with
-          | Ok restprg => Ok (C_DeclCombVariant tn newlst newargs :: restprg)
+      match unfold_type Sigma Delta (T_Prod lst) with
+      | Err e => Err e
+      | Ok (T_Prod newlst) =>
+          match unfold_type Sigma Delta (T_Prod args) with
           | Err e => Err e
+          | Ok (T_Prod newargs) => 
+            match unfold_prog_aux Sigma Delta rest with
+            | Ok restprg => Ok (C_DeclCombVariant tn newlst newargs :: restprg)
+            | Err e => Err e
+            end
+          | Ok _ => Err Err_InvalidType
           end
-      | Ok _, _ | _, Ok _ => Err (Err_InvalidType)
-      | Err e, _ => Err e
+      | Ok _ => Err Err_InvalidType
       end
 
   | C_Eval e :: rest => 
@@ -804,17 +1165,12 @@ Definition unfold_prog (prg : prog) : result prog :=
 
 Record Prg_Result := {prog_type : type; prog_val : value}.
 
-Fixpoint compile_prog_aux (st : machine_state) (inprg : prog) {struct inprg} : result machine_state :=
-  match inprg with
-  | [] => Ok {| 
-          ms_type_ctx := ms_type_ctx st;
-          ms_eval_ctx := ms_eval_ctx st;
-          ms_last_type := st.(ms_last_type);
-          ms_last_value := st.(ms_last_value) |}
-  | [c] => exec_command st c
-  | (curcmd :: rest) =>
-      match exec_command st curcmd with
-      | Ok newst => compile_prog_aux newst rest
+Fixpoint compile_prog_aux (st : machine_state) (prg : prog) {struct prg} : result machine_state :=
+  match prg with
+  | [] => Ok st
+  | c :: rest =>
+      match exec_command st c with
+      | Ok st' => compile_prog_aux st' rest
       | Err e => Err e
       end
   end.
@@ -946,7 +1302,7 @@ Compute (compile_prog example_bad_prog6).
 (* Плохая программа - попытка использовать T_Prim в параметрах типа комбинации 
    в объявлении типа комбинации *)
 Example example_bad_prog7 : prog := [
-  C_DeclCombVariant "Bar" [T_Elem "a"] [T_Prim Prm_Right]
+  C_DeclCombVariant "Bar" [T_Elem "a"] [T_Prod [T_Prim Prm_Left; T_Elem "x"]]
 ].
 Compute (compile_prog example_bad_prog7).
 
@@ -956,3 +1312,113 @@ Example example_good_prog8 := [
   C_Eval (E_App (E_Var "myvar") (E_Prim Prm_Left))].
 Compute (compile_prog example_good_prog8).
 
+(* Плохая программа - закрытие несуществующего типа *)
+Example example_good_prog9 := [
+  C_CloseCombType "Bool"
+].
+Compute (compile_prog example_good_prog9).
+
+(* Плохая программа - повторное закрытие типа *)
+Example example_good_prog10 := [
+  C_DeclCombVariant "Bool" [T_Elem "true"] [];
+  C_DeclCombVariant "Bool" [T_Elem "false"] [];
+  C_CloseCombType "Bool";
+  C_CloseCombType "Bool"
+].
+Compute (compile_prog example_good_prog10).
+
+
+Example test_unify_nested_prod :
+  unify_generic_list
+    [T_Prod [
+       T_Hole "a";
+       T_Elem "x"
+    ]]
+    [T_Prod [
+       T_Elem "Nat";
+       T_Elem "x"
+    ]]
+  =
+  Ok [
+    T_Prod [
+      T_Elem "Nat";
+      T_Elem "x"
+    ]
+  ].
+Proof.
+  reflexivity.
+Qed.
+
+
+Example test_unify_repeated_nested_hole :
+  unify_generic_list
+    [
+      T_Hole "a";
+      T_Comb "Option" [T_Hole "a"]
+    ]
+    [
+      T_Elem "Nat";
+      T_Comb "Option" [T_Elem "Nat"]
+    ]
+  =
+  Ok [
+    T_Elem "Nat";
+    T_Comb "Option" [T_Elem "Nat"]
+  ].
+Proof.
+  reflexivity.
+Qed.
+
+Example test_unify_repeated_nested_hole_error :
+  unify_generic_list
+    [
+      T_Hole "a";
+      T_Comb "Option" [T_Hole "a"]
+    ]
+    [
+      T_Elem "Nat";
+      T_Comb "Option" [T_Elem "Bool"]
+    ]
+  =
+  Err
+    (Err_TypeMismatch
+       (T_Elem "Nat")
+       (T_Elem "Bool")).
+Proof.
+  reflexivity.
+Qed.
+
+Example test_unify_different_comb_names :
+  unify_generic_list
+    [T_Comb "Option" [T_Hole "a"]]
+    [T_Comb "List" [T_Elem "Nat"]]
+  =
+  Err
+    (Err_TypeMismatch
+       (T_Comb "Option" [T_Hole "a"])
+       (T_Comb "List" [T_Elem "Nat"])).
+Proof.
+  reflexivity.
+Qed.
+
+Example test_unify_product_length_error :
+  unify_generic_list
+    [
+      T_Prod [
+        T_Hole "a";
+        T_Hole "b"
+      ]
+    ]
+    [
+      T_Prod [
+        T_Elem "Nat"
+      ]
+    ]
+  =
+  Err
+    (Err_TypeListMismatch
+       [T_Hole "a"; T_Hole "b"]
+       [T_Elem "Nat"]).
+Proof.
+  reflexivity.
+Qed.
