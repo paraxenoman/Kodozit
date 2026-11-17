@@ -72,6 +72,7 @@ Inductive error : Type :=
   | Err_NotImplemented : error
   | Err_UnboundVar : VarName -> error
   | Err_UnboundType : TypeName -> error
+  | Err_UnboundTypeAbbr : TypeName -> error
   | Err_DuplicateVar : VarName -> error
   | Err_DuplicateType : TypeName -> error
   | Err_DuplicateCombSignature : TypeName -> list type -> error
@@ -84,6 +85,7 @@ Inductive error : Type :=
   | Err_CombTypeAlreadyClosed : TypeName -> error
   | Err_TypeListMismatch : list type -> list type -> error
   | Err_UsePrimInDeclComb : type -> error
+  | Err_UseHoleInExpr : expr -> error
   | TypeErr_InvalidApp : type -> type -> error
   | ExprErr_InvalidApp : expr -> expr -> error.
 
@@ -314,7 +316,7 @@ Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : result type :=
     | T_Abbr tn => 
         match type_abbr_lookup Γ tn with
         | Some T => Ok T
-        | None => Err (Err_UnboundType tn)
+        | None => Err (Err_UnboundTypeAbbr tn)
         end
     | T_TRep ty => 
         match norm_type Γ ty with
@@ -675,6 +677,15 @@ Definition infer_type_app (Γ : type_context) (t pt : type) : result type :=
   | _, _ => Err (TypeErr_InvalidApp t pt)
   end.
 
+Fixpoint contains_hole (T : type) : bool :=
+  match T with
+  | T_Hole _ => true
+  | T_TRep T => contains_hole T
+  | T_Prod Ts => existsb contains_hole Ts
+  | T_Comb _ Ts => existsb contains_hole Ts
+  | _ => false
+  end.
+
 (* Функция вывода и проверки типов *)
 Fixpoint infer_type_expr (Γ : type_context) (tm : expr) {struct tm} : result type :=
   match tm with
@@ -685,7 +696,15 @@ Fixpoint infer_type_expr (Γ : type_context) (tm : expr) {struct tm} : result ty
       end 
   | E_Elem u => Ok (T_Elem u)
   | E_Prim p => Ok (T_Prim p)
-  | E_TRep T => norm_type Γ (T_TRep T)
+  | E_TRep T => 
+      match norm_type Γ (T_TRep T) with
+      | Ok nrmty => 
+        if contains_hole nrmty then
+          Err (Err_UseHoleInExpr tm)
+        else
+          Ok nrmty
+      | Err e => Err e
+      end
   | E_Prod [] => Ok T_Unit
   | E_Prod [x] => 
       match infer_type_expr Γ x with
@@ -699,7 +718,14 @@ Fixpoint infer_type_expr (Γ : type_context) (tm : expr) {struct tm} : result ty
       end
   | E_Comb ctorlst arglst => 
       match infer_comb_type_info Γ ctorlst arglst with
-      | Ok (tn, ctortypes, argtypes) => Ok (T_Comb tn argtypes)
+      | Ok (tn, ctortypes, argtypes) => 
+          let trep_replace (t : type) : type :=
+            match t with
+            | T_TRep p => p
+            | _ => t
+            end
+          in
+            Ok (T_Comb tn (map trep_replace argtypes))
       | Err e => Err e
       end
   | E_App (E_Comb ctorlst arglst) (E_Prim prm) => 
@@ -956,7 +982,7 @@ Fixpoint unfold_type
   | T_Abbr X =>
       match lookup_type_def Delta X with
       | Some T' => Ok T'
-      | None => Err (Err_UnboundType X)
+      | None => Err (Err_UnboundTypeAbbr X)
       end
   | T_Hole vn => Ok (T_Hole vn)
   | T_Elem e => Ok (T_Elem e)
@@ -1172,6 +1198,27 @@ Example example_good_prog6 := [
 ].
 Compute (compile_prog example_good_prog6).
 
+(* Хорошая программа - использование T_TRep для уточнения типа комбинации *)
+Example example_good_prog7 := [
+  C_DeclCombVariant "Nat" [T_Elem "Zero"] [];
+  C_DeclCombVariant "Nat" [T_Elem "Succ"; T_Comb "Nat" []] [];
+  C_CloseCombType "Nat";
+  C_NewTypeAbbr "Nat2" (T_Comb "Nat" []);
+  C_DeclCombVariant "Option" [T_Elem "None"] [T_TRep (T_Hole "a")];
+  C_DeclCombVariant "Option" [T_Elem "Some"] [T_Hole "a"];
+  C_DeclCombVariant "Option" [T_Elem "NoneNat"] [T_TRep (T_Abbr "Nat2")];
+  C_DeclCombVariant "Option" [T_Elem "SomeNat"] [T_Abbr "Nat2"];
+  C_CloseCombType "Option";
+  C_DeclVar "comb" (E_Comb [E_Elem "NoneNat"] [E_TRep (T_Abbr "Nat2")]);
+  C_Eval (E_Prod [
+      E_Comb [E_Elem "SomeNat"] [E_Comb [E_Elem "Zero"] []];
+      E_Var "comb"; 
+      E_Comb [E_Elem "Some"] [E_Comb [E_Elem "Zero"] []];
+      E_Comb [E_Elem "None"] [E_TRep (T_Abbr "Nat2")]
+  ])
+].
+Compute (compile_prog example_good_prog7).
+
 (* Плохая программа - несоблюдение ограничений типов *)
 Example example_bad_prog0 := [
   C_DeclCombVariant "Foo" [T_Elem "Foo"] [T_Hole "a"; T_Hole "a"];
@@ -1350,4 +1397,5 @@ Example test_unify_product_length_error :
 Proof.
   reflexivity.
 Qed.
+
 
