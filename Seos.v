@@ -1253,9 +1253,11 @@ Example example_good_prog7 := [
   C_DeclCombVariant "List" (T_Elem "Nil") ["a"] [T_TRep (T_Hole "a")];
   C_DeclCombVariant "List" (T_Elem "Cons") ["a"] [T_Hole "a"; T_Comb "List" [T_Hole "a"]];
   C_CloseCombType "List";
-  C_DeclVar "emptyNatLst" (E_Comb (E_Elem "Nil") [E_TRep (T_Comb "Nat" [])]);
   C_DeclVar "zero" (E_Comb (E_Elem "Zero") []);
-  C_Eval (E_Comb (E_Elem "Cons") [E_Var "zero"; E_Var "emptyNatLst"])
+  C_Eval (E_Comb (E_Elem "Cons") [
+      E_Var "zero"; 
+      (E_Comb (E_Elem "Nil") [E_TRep (T_Comb "Nat" [])])
+  ])
 ].
 Compute (compile_prog example_good_prog7).
 
