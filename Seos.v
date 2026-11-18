@@ -81,7 +81,7 @@ Inductive error : Type :=
   | Err_UnknownCombSignature : error
   | Err_InvalidType : error
   | Err_TypeMismatch : type -> type -> error
-  | Err_UnexpectedVar : VarName -> error
+  | Err_NoUseUnfoldProg : error
   | Err_CombTypeClosed : TypeName -> error
   | Err_CloseUnknownCombType : TypeName -> error
   | Err_CombTypeAlreadyClosed : TypeName -> error
@@ -764,11 +764,7 @@ Fixpoint infer_type_expr (Γ : type_context) (tm : expr) {struct tm} : result ty
   end
   in
   match tm with
-  | E_Var x => 
-      match var_type_lookup Γ x with
-      | Some T => Ok T
-      | None => Err (Err_UnboundVar x)
-      end 
+  | E_Var x => Err Err_NoUseUnfoldProg
   | E_Elem u => Ok (T_Elem u)
   | E_Prim p => Ok (T_Prim p)
   | E_TRep T => 
@@ -824,11 +820,7 @@ Fixpoint infer_type_expr (Γ : type_context) (tm : expr) {struct tm} : result ty
 (* Функция вычисления для выражений *) 
 Fixpoint eval_expr (Sigma : eval_context) (tm : expr) {struct tm} : result value :=
   match tm with
-  | E_Var x =>
-      match var_value_lookup Sigma x with
-      | Some v => Ok v
-      | None => Err (Err_UnboundVar x)
-      end
+  | E_Var x => Err Err_NoUseUnfoldProg
   | E_Elem e => Ok (V_Elem e)
   | E_Prim p => Ok (V_Prim p)
   | E_TRep T => 
@@ -877,7 +869,7 @@ Definition exec_command (st : machine_state) (cmd : command) : result machine_st
   let Γ := ms_type_ctx st in
   let Sigma := ms_eval_ctx st in
   match cmd with
-  | C_DeclVar x inex =>
+  | C_DeclVar x inex => 
       match var_value_lookup Sigma x, var_type_lookup Γ x with
       | None, None =>
           match infer_type_expr Γ inex with
@@ -918,16 +910,13 @@ Definition exec_command (st : machine_state) (cmd : command) : result machine_st
       match norm_type Γ ctortype with
       | Ok nrmctortype =>
         match type_comb_lookup Γ nrmctortype with
-        | Some _ => Err (Err_DuplicateCombSignature tn nrmctortype)
+        | Some (oldtn, _, _, _) => Err (Err_DuplicateCombSignature oldtn nrmctortype)
         | None => 
             if contains_prim nrmctortype then
               Err (Err_UsePrimInDeclComb nrmctortype)
             else
             match norm_comb_list norm_type Γ args with
             | Ok nrmargs =>
-                if contains_prim (T_Prod nrmargs) then
-                  Err (Err_UsePrimInDeclComb (T_Prod nrmargs))
-                else
                 Ok {| 
                     ms_type_ctx := (BindCombType tn nrmctortype holenames nrmargs :: Γ);
                     ms_eval_ctx := Sigma;
