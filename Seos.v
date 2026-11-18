@@ -857,6 +857,7 @@ Fixpoint eval_expr (Sigma : eval_context) (tm : expr) {struct tm} : result value
       end
   | E_App a b =>
       match eval_expr Sigma a, eval_expr Sigma b with
+      | Ok (V_Prod []), Ok (V_Prim _) => Err (ExprErr_InvalidApp a b)
       | Ok (V_Prod (x :: xs)), Ok (V_Prim Prm_Left) => Ok x
       | Ok (V_Prod xs), Ok (V_Prim Prm_Right) => Ok (last xs V_Unit)
       | Ok (V_Comb ctor _), Ok (V_Prim Prm_Left) => Ok ctor
