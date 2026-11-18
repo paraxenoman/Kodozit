@@ -3,6 +3,7 @@
 Require Import Stdlib.Strings.String.
 Require Import Stdlib.Lists.List.
 Import ListNotations.
+Open Scope list_scope.
 Open Scope string_scope.
 Open Scope bool_scope.
 
@@ -1203,14 +1204,14 @@ Compute (compile_prog example_good_prog2).
 
 (* Хорошая программа -  объявление индуктивного типа натуральных чисел *)
 Example example_good_prog3 := [
-  C_DeclCombVariant "Option" (T_Elem "None") [] [];
+  C_DeclCombVariant "Option" (T_Elem "None") ["a"] [T_TRep (T_Hole "a")];
   C_DeclCombVariant "Option" (T_Elem "Some") ["a"] [T_Hole "a"];
   C_CloseCombType "Option";
   C_DeclCombVariant "Nat" (T_Elem "Zero") [] [];
-  C_DeclCombVariant "Nat" (T_Prod [T_Elem "Succ"; T_Comb "Nat" []]) [] [];
+  C_DeclCombVariant "Nat" (T_Elem "Succ") [] [T_Comb "Nat" []];
   C_CloseCombType "Nat";
   C_DeclVar "zero" (E_Comb (E_Elem "Zero") []);
-  C_Eval (E_Comb (E_Elem "Some") [E_Comb (E_Prod [E_Elem "Succ"; E_Var "zero"]) []])
+  C_Eval (E_Comb (E_Elem "Some") [E_Comb (E_Elem "Succ") [E_Var "zero"]])
 ].
 Compute (compile_prog example_good_prog3).
 
@@ -1232,34 +1233,29 @@ Compute (compile_prog example_good_prog5).
 
 (* Хорошая программа -  применение E_Prim к комбинации *)
 Example example_good_prog6 := [
-  C_DeclCombVariant "Option" (T_Elem "None") [] [];
-  C_DeclCombVariant "Option" (T_Elem "Some") [] [T_Hole "a"];
-  C_CloseCombType "Option";
-  C_DeclCombVariant "Nat" (T_Elem "Zero") [] [];
-  C_DeclCombVariant "Nat" (T_Prod [T_Elem "Succ"; T_Comb "Nat" []]) [] [];
-  C_CloseCombType "Nat";
-  C_DeclVar "zero" (E_Comb (E_Elem "Zero") []);
-  C_DeclVar "comb" (E_Comb 
-      (E_Elem "Some") 
-      [E_Comb (E_Prod [E_Elem "Succ"; E_Var "zero"]) []]
- );
- C_Eval (E_App (E_Var "comb") (E_Prim Prm_Right))
-].
-Compute (compile_prog example_good_prog6).
-
-(* Хорошая программа - использование T_TRep *)
-Example example_good_prog7 := [
-  C_DeclCombVariant "Nat" (T_Elem "Zero") [] [];
-  C_DeclCombVariant "Nat" (T_Prod [T_Elem "Succ"; T_Comb "Nat" []]) [] [];
-  C_CloseCombType "Nat";
-  C_NewTypeAbbr "Nat2" (T_Comb "Nat" []);
   C_DeclCombVariant "Option" (T_Elem "None") ["a"] [T_TRep (T_Hole "a")];
   C_DeclCombVariant "Option" (T_Elem "Some") ["a"] [T_Hole "a"];
   C_CloseCombType "Option";
-  C_Eval (E_Prod [
-      E_App (E_Comb (E_Elem "Some") [E_Comb (E_Elem "Zero") []]) (E_Prim Prm_Right);
-      E_Comb (E_Elem "None") [E_TRep (T_Abbr "Nat2")]
-  ])
+  C_DeclCombVariant "Nat" (T_Elem "Zero") [] [];
+  C_DeclCombVariant "Nat" (T_Elem "Succ") [] [T_Comb "Nat" []];
+  C_CloseCombType "Nat";
+  C_DeclVar "zero" (E_Comb (E_Elem "Zero") []);
+  C_DeclVar "comb" (E_Comb (E_Elem "Some") [E_Comb (E_Elem "Succ") [E_Var "zero"]]);
+  C_Eval (E_App (E_Var "comb") (E_Prim Prm_Right))
+].
+Compute (compile_prog example_good_prog6).
+
+(* Хорошая программа - Тип списков *)
+Example example_good_prog7 := [
+  C_DeclCombVariant "Nat" (T_Elem "Zero") [] [];
+  C_DeclCombVariant "Nat" (T_Elem "Succ") [] [T_Comb "Nat" []];
+  C_CloseCombType "Nat";
+  C_DeclCombVariant "List" (T_Elem "Nil") ["a"] [T_TRep (T_Hole "a")];
+  C_DeclCombVariant "List" (T_Elem "Cons") ["a"] [T_Hole "a"; T_Comb "List" [T_Hole "a"]];
+  C_CloseCombType "List";
+  C_DeclVar "emptyNatLst" (E_Comb (E_Elem "Nil") [E_TRep (T_Comb "Nat" [])]);
+  C_DeclVar "zero" (E_Comb (E_Elem "Zero") []);
+  C_Eval (E_Comb (E_Elem "Cons") [E_Var "zero"; E_Var "emptyNatLst"])
 ].
 Compute (compile_prog example_good_prog7).
 
