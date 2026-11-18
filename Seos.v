@@ -677,6 +677,7 @@ Definition unify_generic_list
 
 Definition infer_type_app (Γ : type_context) (t pt : type) : result type :=
   match t, pt with
+  | T_Prod [], T_Prim _ => Err (TypeErr_InvalidApp t pt)
   | T_Prod (x :: xs), T_Prim Prm_Left => norm_type Γ x
   | T_Prod xs, T_Prim Prm_Right => norm_type Γ (last xs T_Unit)
   | _, _ => Err (TypeErr_InvalidApp t pt)
@@ -923,6 +924,9 @@ Definition exec_command (st : machine_state) (cmd : command) : result machine_st
             else
             match norm_comb_list norm_type Γ args with
             | Ok nrmargs =>
+                if contains_prim (T_Prod nrmargs) then
+                  Err (Err_UsePrimInDeclComb (T_Prod nrmargs))
+                else
                 Ok {| 
                     ms_type_ctx := (BindCombType tn nrmctortype holenames nrmargs :: Γ);
                     ms_eval_ctx := Sigma;
