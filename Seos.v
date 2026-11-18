@@ -73,6 +73,7 @@ Inductive error : Type :=
   | Err_UnboundVar : VarName -> error
   | Err_UnboundType : TypeName -> error
   | Err_UnboundTypeAbbr : TypeName -> error
+  | Err_UnboundHole : string -> error
   | Err_DuplicateVar : VarName -> error
   | Err_DuplicateType : TypeName -> error
   | Err_DuplicateCombSignature : TypeName -> type -> error
@@ -610,7 +611,7 @@ Definition unify_type
   поэтому повторные вхождения одной дыры обязаны иметь
   одинаковый фактический тип.
 *)
-Fixpoint unify_type_list
+Fixpoint unify_type_list_aux
     (subst : type_subst)
     (ptrns actuals : list type)
     (original_ptrns original_actuals : list type)
@@ -629,7 +630,7 @@ Fixpoint unify_type_list
           Err e
 
       | Ok subst' =>
-          unify_type_list
+          unify_type_list_aux
             subst'
             ptrn_rest
             actual_rest
@@ -643,6 +644,11 @@ Fixpoint unify_type_list
            original_ptrns
            original_actuals)
   end.
+
+Definition unify_type_list (subst : type_subst) (ptrns actuals : list type)
+  : result type_subst 
+  := unify_type_list_aux subst ptrns actuals ptrns actuals.
+
 
 (*
   Основной интерфейс унификации.
@@ -658,8 +664,6 @@ Definition unify_generic_list
 
   match unify_type_list
           []
-          plst
-          arglst
           plst
           arglst
   with
@@ -686,6 +690,24 @@ Fixpoint contains_hole (T : type) : bool :=
   | _ => false
   end.
 
+Fixpoint holenames_in_subst_lookup
+    (holenames : list string)
+    (subst : type_subst)
+  : result (list type) :=
+  match holenames with
+  | [] => Ok []
+  | str :: rest => 
+      match holenames_in_subst_lookup rest subst with
+      | Ok ts =>
+          match type_hole_lookup subst str with
+          | Some t => Ok (t :: ts) 
+          | None => Err (Err_UnboundHole str)
+          end
+      | Err e => Err e
+      end
+  end.
+
+
 (* Функция вывода и проверки типов *)
 Fixpoint infer_type_expr (Γ : type_context) (tm : expr) {struct tm} : result type :=
   let infer_comb_type_decl_info Γ (ctor : expr) 
@@ -706,10 +728,34 @@ Fixpoint infer_type_expr (Γ : type_context) (tm : expr) {struct tm} : result ty
   | Ok (tn, ctortype, holenames, argsptrn) => 
       match infer_list infer_type_expr Γ arglst with
       | Ok argtypes =>
-          match unify_generic_list argsptrn argtypes with
-          | Ok reslst => Ok (tn, ctortype, reslst)
+          match unify_type_list [] argsptrn argtypes with
+          | Ok argsubst =>
+              match holenames_in_subst_lookup holenames argsubst with
+              | Ok typeargs =>
+                   Ok (tn, ctortype, typeargs)
+              | Err e => Err e
+              end
           | Err e => Err e
           end
+      | Err e => Err e
+      end
+  | Err e => Err e
+  end
+  in
+  let infer_comb_prim_app (ctor : expr) (arglst : list expr) (prm : prim)
+    : result type :=
+  match infer_comb_type_info Γ ctor arglst with
+  | Ok _ =>
+      match infer_type_expr Γ ctor with
+      | Ok ctortype => 
+        match infer_list infer_type_expr Γ arglst with
+        | Ok argtype =>
+          match prm with
+          | Prm_Left => norm_type Γ ctortype
+          | Prm_Right => norm_type Γ (T_Prod argtype)
+          end
+        | Err e => Err e
+        end
       | Err e => Err e
       end
   | Err e => Err e
@@ -756,14 +802,7 @@ Fixpoint infer_type_expr (Γ : type_context) (tm : expr) {struct tm} : result ty
       | Err e => Err e
       end
   | E_App (E_Comb ctor arglst) (E_Prim prm) => 
-      match infer_comb_type_info Γ ctor arglst with
-      | Ok (tn, ctortype, argtypes) =>
-        match prm with
-        | Prm_Left => norm_type Γ ctortype
-        | Prm_Right => norm_type Γ (T_Prod argtypes)
-        end
-      | Err e => Err e
-      end
+      infer_comb_prim_app ctor arglst prm
   | E_App a b => 
     match infer_type_expr Γ a with
     | Err e => Err e
@@ -819,7 +858,7 @@ Fixpoint eval_expr (Sigma : eval_context) (tm : expr) {struct tm} : result value
       | Ok (V_Prod (x :: xs)), Ok (V_Prim Prm_Left) => Ok x
       | Ok (V_Prod xs), Ok (V_Prim Prm_Right) => Ok (last xs V_Unit)
       | Ok (V_Comb ctor _), Ok (V_Prim Prm_Left) => Ok ctor
-      | Ok (V_Comb _ args), Ok (V_Prim Prm_Right) =>
+      | Ok (V_Comb _ args), Ok (V_Prim Prm_Right) => 
         match args with
         | [] => Ok V_Unit
         | [x] => Ok x
@@ -878,6 +917,9 @@ Definition exec_command (st : machine_state) (cmd : command) : result machine_st
         match type_comb_lookup Γ nrmctortype with
         | Some _ => Err (Err_DuplicateCombSignature tn nrmctortype)
         | None => 
+            if contains_prim nrmctortype then
+              Err (Err_UsePrimInDeclComb nrmctortype)
+            else
             match norm_comb_list norm_type Γ args with
             | Ok nrmargs =>
                 Ok {| 
@@ -1162,7 +1204,7 @@ Compute (compile_prog example_good_prog2).
 (* Хорошая программа -  объявление индуктивного типа натуральных чисел *)
 Example example_good_prog3 := [
   C_DeclCombVariant "Option" (T_Elem "None") [] [];
-  C_DeclCombVariant "Option" (T_Elem "Some") [] [T_Hole "a"];
+  C_DeclCombVariant "Option" (T_Elem "Some") ["a"] [T_Hole "a"];
   C_CloseCombType "Option";
   C_DeclCombVariant "Nat" (T_Elem "Zero") [] [];
   C_DeclCombVariant "Nat" (T_Prod [T_Elem "Succ"; T_Comb "Nat" []]) [] [];
@@ -1174,7 +1216,7 @@ Compute (compile_prog example_good_prog3).
 
 (* Хорошая программа - типы комбинаций с параметрами произвольных типов *)
 Example example_good_prog4 := [
-  C_DeclCombVariant "Foo" (T_Elem "Foo") [] [T_Hole "a"; T_Hole "b"];
+  C_DeclCombVariant "Foo" (T_Elem "Foo") ["a"; "b"] [T_Hole "a"; T_Hole "b"];
   C_CloseCombType "Foo";
   C_Eval (E_Comb (E_Elem "Foo") [E_Unit; (E_Prim Prm_Left)])
 ].
@@ -1182,7 +1224,7 @@ Compute (compile_prog example_good_prog4).
 
 (* Хорошая программа - типы комбинаций с параметрами одинаковых типов *)
 Example example_good_prog5 := [
-  C_DeclCombVariant "Foo" (T_Elem "Foo") [] [T_Hole "a"; T_Hole "a"];
+  C_DeclCombVariant "Foo" (T_Elem "Foo") ["a"] [T_Hole "a"; T_Hole "a"];
   C_CloseCombType "Foo";
   C_Eval (E_Comb (E_Elem "Foo") [E_Unit; E_Unit])
 ].
@@ -1197,27 +1239,25 @@ Example example_good_prog6 := [
   C_DeclCombVariant "Nat" (T_Prod [T_Elem "Succ"; T_Comb "Nat" []]) [] [];
   C_CloseCombType "Nat";
   C_DeclVar "zero" (E_Comb (E_Elem "Zero") []);
-  C_DeclVar "comb" (E_Comb (E_Elem "Some") [E_Comb (E_Prod [E_Elem "Succ"; E_Var "zero"]) []]);
-  C_Eval (E_App (E_Var "comb") (E_Prim Prm_Right))
+  C_DeclVar "comb" (E_Comb 
+      (E_Elem "Some") 
+      [E_Comb (E_Prod [E_Elem "Succ"; E_Var "zero"]) []]
+ );
+ C_Eval (E_App (E_Var "comb") (E_Prim Prm_Right))
 ].
 Compute (compile_prog example_good_prog6).
 
-(* Хорошая программа - использование T_TRep для уточнения типа комбинации *)
+(* Хорошая программа - использование T_TRep *)
 Example example_good_prog7 := [
   C_DeclCombVariant "Nat" (T_Elem "Zero") [] [];
   C_DeclCombVariant "Nat" (T_Prod [T_Elem "Succ"; T_Comb "Nat" []]) [] [];
   C_CloseCombType "Nat";
   C_NewTypeAbbr "Nat2" (T_Comb "Nat" []);
-  C_DeclCombVariant "Option" (T_Elem "None") [] [T_TRep (T_Hole "a")];
-  C_DeclCombVariant "Option" (T_Elem "Some") [] [T_Hole "a"];
-  C_DeclCombVariant "Option" (T_Elem "NoneNat") [] [T_TRep (T_Abbr "Nat2")];
-  C_DeclCombVariant "Option" (T_Elem "SomeNat") [] [T_Abbr "Nat2"];
+  C_DeclCombVariant "Option" (T_Elem "None") ["a"] [T_TRep (T_Hole "a")];
+  C_DeclCombVariant "Option" (T_Elem "Some") ["a"] [T_Hole "a"];
   C_CloseCombType "Option";
-  C_DeclVar "comb" (E_Comb (E_Elem "NoneNat") [E_TRep (T_Abbr "Nat2")]);
   C_Eval (E_Prod [
-      E_Comb (E_Elem "SomeNat") [E_Comb (E_Elem "Zero") []];
-      E_Var "comb"; 
-      E_Comb (E_Elem "Some") [E_Comb (E_Elem "Zero") []];
+      E_App (E_Comb (E_Elem "Some") [E_Comb (E_Elem "Zero") []]) (E_Prim Prm_Right);
       E_Comb (E_Elem "None") [E_TRep (T_Abbr "Nat2")]
   ])
 ].
