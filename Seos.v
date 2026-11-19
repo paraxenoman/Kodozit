@@ -775,11 +775,7 @@ Definition exec_command
   | C_DeclVar _ rhs =>
       match infer_type_expr Gamma rhs with
       | Err e => Err e
-      | Ok _ =>
-          match eval_expr rhs with
-          | Err e => Err e
-          | Ok _ => Ok st
-          end
+      | Ok _ => Ok st
       end
   | C_NewTypeAbbr X T =>
       if type_declared Gamma X then
