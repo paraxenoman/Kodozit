@@ -393,6 +393,25 @@ Fixpoint unify_type_fuel
     (subst : type_subst)
     (ptrn actual : type)
   : result type_subst :=
+  let fix unify_list_elements
+      (fuel' : nat)
+      (ptrns_orig actuals_orig : list type)
+      (subst0 : type_subst)
+      (ptrns0 actuals0 : list type)
+      {struct ptrns0}
+      : result type_subst :=
+      match ptrns0, actuals0 with
+      | [], [] => Ok subst0
+      | ptrn0 :: ptrn_rest, actual0 :: actual_rest =>
+          match unify_type_fuel fuel' subst0 ptrn0 actual0 with
+          | Err e => Err e
+          | Ok subst1 => 
+              unify_list_elements 
+                  fuel' ptrns_orig actuals_orig subst1 ptrn_rest actual_rest
+          end
+      | _, _ => Err (Err_TypeListMismatch ptrns_orig actuals_orig)
+      end
+  in
   match fuel with
   | 0 => Err Err_InvalidType
   | S fuel' =>
@@ -439,64 +458,19 @@ Fixpoint unify_type_fuel
               unify_type_fuel fuel' subst ptrn1 actual1
           | _ => Err (Err_TypeMismatch ptrn actual)
           end
-      | T_Prod ptrns =>
+      | T_Prod ptrn_args =>
           match actual with
-          | T_Prod actuals =>
-              let fix unify_product_elements
-                  (subst0 : type_subst)
-                  (ptrns0 actuals0 : list type)
-                  {struct ptrns0}
-                  : result type_subst :=
-                  match ptrns0, actuals0 with
-                  | [], [] => Ok subst0
-                  | ptrn0 :: ptrn_rest, actual0 :: actual_rest =>
-                      match
-                        unify_type_fuel fuel' subst0 ptrn0 actual0
-                      with
-                      | Err e => Err e
-                      | Ok subst1 =>
-                          unify_product_elements
-                            subst1
-                            ptrn_rest
-                            actual_rest
-                      end
-                  | _, _ =>
-                      Err (Err_TypeListMismatch ptrns actuals)
-                  end
-              in
-              unify_product_elements subst ptrns actuals
+          | T_Prod actual_args => 
+                unify_list_elements 
+                  fuel' ptrn_args actual_args subst ptrn_args actual_args
           | _ => Err (Err_TypeMismatch ptrn actual)
           end
       | T_Comb ptrn_name ptrn_args =>
           match actual with
           | T_Comb actual_name actual_args =>
               if eqb ptrn_name actual_name then
-                let fix unify_comb_arguments
-                    (subst0 : type_subst)
-                    (ptrns0 actuals0 : list type)
-                    {struct ptrns0}
-                    : result type_subst :=
-                    match ptrns0, actuals0 with
-                    | [], [] => Ok subst0
-                    | ptrn0 :: ptrn_rest, actual0 :: actual_rest =>
-                        match
-                          unify_type_fuel fuel' subst0 ptrn0 actual0
-                        with
-                        | Err e => Err e
-                        | Ok subst1 =>
-                            unify_comb_arguments
-                              subst1
-                              ptrn_rest
-                              actual_rest
-                        end
-                    | _, _ =>
-                        Err
-                          (Err_TypeListMismatch
-                             ptrn_args
-                             actual_args)
-                    end
-                in
-                unify_comb_arguments subst ptrn_args actual_args
+                unify_list_elements 
+                  fuel' ptrn_args actual_args subst ptrn_args actual_args
               else
                 Err (Err_TypeMismatch ptrn actual)
           | _ => Err (Err_TypeMismatch ptrn actual)
