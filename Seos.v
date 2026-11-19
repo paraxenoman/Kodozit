@@ -7,13 +7,10 @@ Open Scope list_scope.
 Open Scope string_scope.
 Open Scope bool_scope.
 
-(* Функция равенства двух списков *)
-Fixpoint list_eqb {A} (feq : A -> A -> bool)
-                  (l1 l2 : list A) : bool :=
+Fixpoint list_eqb {A : Type} (feq : A -> A -> bool) (l1 l2 : list A) : bool :=
   match l1, l2 with
   | [], [] => true
-  | x1 :: t1, x2 :: t2 =>
-      feq x1 x2 && list_eqb feq t1 t2
+  | x1 :: t1, x2 :: t2 => feq x1 x2 && list_eqb feq t1 t2
   | _, _ => false
   end.
 
@@ -25,7 +22,6 @@ Inductive prim : Type :=
   | Prm_Left : prim
   | Prm_Right : prim.
 
-(* Функция равенства примов *)
 Definition prim_beq (p1 p2 : prim) : bool :=
   match p1, p2 with
   | Prm_Left, Prm_Left => true
@@ -33,7 +29,6 @@ Definition prim_beq (p1 p2 : prim) : bool :=
   | _, _ => false
   end.
 
-(* Синтаксис типов  *)
 Inductive type : Type :=
   | T_Hole : string -> type
   | T_Abbr : TypeName -> type
@@ -43,7 +38,6 @@ Inductive type : Type :=
   | T_Prod : list type -> type
   | T_Comb : TypeName -> list type -> type.
 
-(* Синтаксис выражений  *)
 Inductive expr : Type :=
   | E_Var : VarName -> expr
   | E_Elem : elem -> expr
@@ -53,7 +47,6 @@ Inductive expr : Type :=
   | E_Comb : expr -> list expr -> expr
   | E_App : expr -> expr -> expr.
 
-(* Синтаксис значений *)
 Inductive value : Type :=
   | V_Elem : elem -> value
   | V_Prim : prim -> value
@@ -61,7 +54,6 @@ Inductive value : Type :=
   | V_Prod : list value -> value
   | V_Comb : value -> list value -> value.
 
-(* Синтаксис комманд *)
 Inductive command : Type :=
   | C_DeclVar : VarName -> expr -> command
   | C_NewTypeAbbr : TypeName -> type -> command
@@ -80,8 +72,9 @@ Inductive error : Type :=
   | Err_DuplicateCombSignature : TypeName -> type -> error
   | Err_UnknownCombSignature : error
   | Err_InvalidType : error
+  | Err_CyclicTypeAbbr : TypeName -> error
   | Err_TypeMismatch : type -> type -> error
-  | Err_NoUseUnfoldProg : error
+  | Err_UnexpandedVar : VarName -> error
   | Err_CombTypeClosed : TypeName -> error
   | Err_CloseUnknownCombType : TypeName -> error
   | Err_CombTypeAlreadyClosed : TypeName -> error
@@ -94,9 +87,9 @@ Inductive error : Type :=
 Inductive result (A : Type) : Type :=
   | Ok : A -> result A
   | Err : error -> result A.
+
 Arguments Ok {A} _.
 Arguments Err {A} _.
-
 
 Notation V_Unit := (V_Prod []).
 Notation E_Unit := (E_Prod []).
@@ -104,493 +97,409 @@ Notation T_Unit := (T_Prod []).
 
 Inductive TypeBinding : Type :=
   | BindTypeAbbr : TypeName -> type -> TypeBinding
-  | BindVarType : VarName -> type -> TypeBinding
   | BindCombType : TypeName -> type -> list string -> list type -> TypeBinding
   | CloseCombType : TypeName -> TypeBinding.
 
-(* Контекст типизации *)
-Definition type_context := list TypeBinding.
+Definition type_context : Type := list TypeBinding.
 
-(* Функция поиска типа по его синониму (аббревиатуре) *)
-Fixpoint type_abbr_lookup (Γ : type_context) (X : TypeName) : option type :=
-  match Γ with
+Fixpoint type_abbr_lookup (Gamma : type_context) (X : TypeName) : option type :=
+  match Gamma with
   | [] => None
-  | (BindTypeAbbr Y T) :: rest => 
-      if eqb X Y then 
-        Some T 
-      else 
-        type_abbr_lookup rest X
+  | BindTypeAbbr Y T :: rest =>
+      if eqb X Y then Some T else type_abbr_lookup rest X
   | _ :: rest => type_abbr_lookup rest X
   end.
 
-(* Функция поиска типа переменной в контексте *)
-Fixpoint var_type_lookup (Γ : type_context) (x : VarName) : option type :=
-  match Γ with
-  | [] => None
-  | (BindVarType y T) :: rest => 
-      if eqb x y then
-        Some T 
-      else 
-        var_type_lookup rest x
-  | _ :: rest => var_type_lookup rest x
-  end.
-
-Inductive VarValueBinding : Type :=
-  | BindVarValue : VarName -> value -> VarValueBinding.
-
-(* Контекст вычислений *)
-Definition eval_context := list VarValueBinding.
-
-(* Функция поиска значения переменной в контексте вычислений *)
-Fixpoint var_value_lookup (Sigma : eval_context) (x : VarName) : option value :=
-  match Sigma with
-  | [] => None
-  | (BindVarValue y v1) :: rest => 
-      if eqb x y then
-        Some v1 
-      else 
-        var_value_lookup rest x
-  end.
-
-Fixpoint eval_expr_list 
-        (f : eval_context -> expr -> result value) 
-        (ctx : eval_context)
-        (ts : list expr) 
-        : result (list value) :=
+Fixpoint eval_expr_list (f : expr -> result value) (ts : list expr) : result (list value) :=
   match ts with
   | [] => Ok []
   | t :: rest =>
-      match f ctx t with
-      | Ok v => 
-          match (eval_expr_list f ctx rest) with
-          | Ok lt => Ok (v :: lt)
-          | Err e => Err e
-          end
+      match f t with
       | Err e => Err e
+      | Ok v =>
+          match eval_expr_list f rest with
+          | Err e => Err e
+          | Ok vs => Ok (v :: vs)
+          end
       end
-  end.
-
-Fixpoint norm_list 
-      (f : type_context -> type -> result type) 
-      (Γ : type_context) 
-      (ts : list type) 
-      : result (list type) :=
-  match ts with
-  | [] => Ok []
-  | t :: rest =>
-    match f Γ t with
-    | Ok nrmpt =>
-        match norm_list f Γ rest with
-        | Ok nrmpts => Ok (nrmpt :: nrmpts)
-        | Err e => Err e
-        end
-    | Err e => Err e
-    end
   end.
 
 Fixpoint contains_prim (T : type) : bool :=
   match T with
   | T_Prim _ => true
-  | T_TRep T => contains_prim T
+  | T_TRep T1 => contains_prim T1
   | T_Prod Ts => existsb contains_prim Ts
   | T_Comb _ Ts => existsb contains_prim Ts
   | _ => false
   end.
 
-
-Fixpoint norm_comb_list 
-      (f : type_context -> type -> result type) 
-      (Γ : type_context) 
-      (ts : list type) 
-      : result (list type) :=
-  match ts with
-  | [] => Ok []
-  | t :: rest =>
-    match f Γ t with
-    | Ok nrmpt =>
-      if contains_prim nrmpt then
-        Err (Err_UsePrimInDeclComb nrmpt)
-      else
-        match norm_comb_list f Γ rest with
-        | Ok nrmpts => Ok (nrmpt :: nrmpts)
-        | Err e => Err e
-        end
-    | Err e => Err e
-    end
+Fixpoint contains_hole (T : type) : bool :=
+  match T with
+  | T_Hole _ => true
+  | T_TRep T1 => contains_hole T1
+  | T_Prod Ts => existsb contains_hole Ts
+  | T_Comb _ Ts => existsb contains_hole Ts
+  | _ => false
   end.
 
-Record machine_state := {
-  ms_type_ctx : type_context;
-  ms_eval_ctx : eval_context;
-  ms_last_type : type;
-  ms_last_value : value
-}.
-
-Definition initial_state : machine_state :=
-  {| ms_type_ctx := [];
-     ms_eval_ctx := [];
-     ms_last_type := T_Unit;
-     ms_last_value := V_Unit |}.
-
-(* Функция булевого равенства для типов без нормализации *)
-Fixpoint type_beq (it1 it2 : type) : bool := 
-  match it1, it2 with
-  | T_Abbr vn1, T_Abbr vn2 => eqb vn1 vn2
-  | T_Elem e1, T_Elem e2 => eqb e1 e2
-  | T_Prim p1, T_Prim p2 => prim_beq p1 p2
-  | T_TRep tp1, T_TRep tp2 => type_beq tp1 tp2
-  | T_Prod l1, T_Prod l2 => list_eqb type_beq l1 l2
-  | T_Comb vn1 l1, T_Comb vn2 l2 => eqb vn1 vn2 && list_eqb type_beq l1 l2
-  | T_Hole vn1, T_Hole vn2 => eqb vn1 vn2
-  | _, _ => false
-  end.
-
-(* Функция поиска типа комбинации *)
-Fixpoint type_comb_lookup 
-      (Γ : type_context) 
-      (ctor : type) 
-      {struct Γ} : option (TypeName * type * list string * list type) :=
-  match Γ with
-  | [] => None
-  | (BindCombType TN defctor holenames defargs) :: rest => 
-      if type_beq ctor defctor then 
-        Some (TN, defctor, holenames, defargs)
-      else 
-        type_comb_lookup rest ctor
-  | _ :: rest => type_comb_lookup rest ctor
-  end.
-
-(* Вспомогательная функция для вывода типов для списка термов *)
-Fixpoint infer_list 
-          {A : Type} 
-          (f : type_context -> A -> result type)
-          (Γ : type_context)
-          (ts : list A)
-          {struct ts}
-          : result (list type) :=
-  match ts with
-  | [] => Ok []
-  | t :: rest =>
-      match f Γ t with
-      | Ok T =>
-          match infer_list f Γ rest with
-          | Ok Ts => Ok (T :: Ts)
-          | Err e => Err e
-          end
-      | Err e => Err e
-      end
-  end.
-
-Fixpoint comb_type_declared (ctx : type_context) (intn : TypeName) : bool :=
-  match ctx with
-  | [] => false
-  | (BindCombType tn _ _ _) :: rest => 
-      if eqb intn tn then 
-        true
-      else 
-        comb_type_declared rest intn
-  | _ :: rest => comb_type_declared rest intn
-  end.
-
-Definition type_abbr_declared (ctx : type_context) (intn : TypeName) : bool :=
-  match type_abbr_lookup ctx intn with
-  | Some _ => true
-  | None => false
-  end.
-
-Fixpoint comb_type_closed (ctx : type_context) (intn : TypeName) : bool :=
-  match ctx with
-  | [] => false
-  | (CloseCombType tn) :: rest => 
-      if eqb intn tn then 
-        true
-      else 
-        comb_type_closed rest intn
-  | _ :: rest => comb_type_closed rest intn
-  end.
-
-Definition type_declared (ctx : type_context) (intn : TypeName) : bool :=
-  comb_type_declared ctx intn || type_abbr_declared ctx intn.
-
-(* Функция нормализации для типов *)
-Fixpoint norm_type (Γ : type_context) (T : type) {struct T} : result type :=
-    match T with
-    | T_Abbr tn => 
-        match type_abbr_lookup Γ tn with
-        | Some T => Ok T
-        | None => Err (Err_UnboundTypeAbbr tn)
-        end
-    | T_TRep ty => 
-        match norm_type Γ ty with
-        | Err e => Err e
-        | Ok nrmty => Ok (T_TRep nrmty)
-        end
-    | T_Prod [x] => norm_type Γ x
-    | T_Prod (p1 :: ps) =>
-        match norm_list norm_type Γ (p1 :: ps) with 
-        | Ok P => Ok (T_Prod P) 
-        | Err e => Err e
-        end
-    | T_Comb tn typeparams => 
-      match norm_list norm_type Γ typeparams with 
-      | Ok nrmlst => Ok (T_Comb tn nrmlst) 
-      | Err e => Err e
-      end
-    | _ => Ok T
-    end.
-
-Definition norm_type_beq
-    (Γ : type_context)
-    (T1 T2 : type) : result bool :=
-  match norm_type Γ T1, norm_type Γ T2 with
-  | Ok N1, Ok N2 => Ok (type_beq N1 N2)
-  | Err e, _ => Err e
-  | _, Err e => Err e
-  end.
-
-(* Функция булевого равенства для значений *)
-Definition value_beq (fnteq : type -> type -> result bool) (fveq : value -> value -> bool) (it1 it2 : value) : result bool :=
-  match it1, it2 with
-  | V_Elem e1, V_Elem e2 => Ok (eqb e1 e2)
-  | V_Prim p1, V_Prim p2 => Ok (prim_beq p1 p2)
-  | V_TRep tp1, V_TRep tp2 => fnteq tp1 tp2
-  | V_Prod l1, V_Prod l2 => Ok (list_eqb fveq l1 l2)
-  | V_Comb ctor1 args1, V_Comb ctor2 args2 => 
-      Ok (list_eqb fveq [ctor1] [ctor2] && list_eqb fveq args1 args2)
-  | _, _ => Ok false
-  end.
-
-(* Подстановка типовых дыр. *)
-Definition type_subst : Type :=
-  list (string * type).
-
-Fixpoint type_hole_lookup
-    (subst : type_subst)
-    (x : string)
-  : option type :=
-  match subst with
-  | [] => None
-
-  | (y, T) :: rest =>
-      if eqb x y
-      then Some T
-      else type_hole_lookup rest x
-  end.
-
-(*
-  Размер типа используется только для получения гарантированно
-  достаточной глубины структурного обхода.
-
-  Это не произвольный fuel: его значение вычисляется из самого типа.
-*)
 Fixpoint type_size (T : type) : nat :=
   match T with
   | T_Hole _ => 1
   | T_Abbr _ => 1
   | T_Elem _ => 1
   | T_Prim _ => 1
-
-  | T_TRep T1 =>
-      S (type_size T1)
-
+  | T_TRep T1 => S (type_size T1)
   | T_Prod Ts =>
-      S (fold_right
-           (fun T n => type_size T + n)
-           0
-           Ts)
-
+      S (fold_right (fun T1 n => type_size T1 + n) 0 Ts)
   | T_Comb _ Ts =>
-      S (fold_right
-           (fun T n => type_size T + n)
-           0
-           Ts)
+      S (fold_right (fun T1 n => type_size T1 + n) 0 Ts)
   end.
 
-(*
-  Структурная унификация одного типа-шаблона с фактическим типом.
+Fixpoint type_context_size (Gamma : type_context) : nat :=
+  match Gamma with
+  | [] => 0
+  | BindTypeAbbr _ T :: rest =>
+      type_size T + type_context_size rest
+  | BindCombType _ ctor _ args :: rest =>
+      type_size ctor
+      + fold_right (fun T n => type_size T + n) 0 args
+      + type_context_size rest
+  | CloseCombType _ :: rest => type_context_size rest
+  end.
 
-  ptrn: тип, который может содержать T_Hole.
+Definition typename_mem (X : TypeName) (xs : list TypeName) : bool :=
+  existsb (fun Y => eqb X Y) xs.
 
-  actual: фактический тип аргумента.
+Record machine_state : Type := {
+  ms_type_ctx : type_context;
+  ms_last_type : type;
+  ms_last_value : value
+}.
 
-  Результат: расширенная подстановка типовых дыр.
-*)
+Definition initial_state : machine_state :=
+  {| ms_type_ctx := [];
+     ms_last_type := T_Unit;
+     ms_last_value := V_Unit |}.
+
+Fixpoint type_beq (T1 T2 : type) : bool :=
+  match T1, T2 with
+  | T_Hole X, T_Hole Y => eqb X Y
+  | T_Abbr X, T_Abbr Y => eqb X Y
+  | T_Elem e1, T_Elem e2 => eqb e1 e2
+  | T_Prim p1, T_Prim p2 => prim_beq p1 p2
+  | T_TRep T1', T_TRep T2' => type_beq T1' T2'
+  | T_Prod Ts1, T_Prod Ts2 => list_eqb type_beq Ts1 Ts2
+  | T_Comb X Ts1, T_Comb Y Ts2 =>
+      eqb X Y && list_eqb type_beq Ts1 Ts2
+  | _, _ => false
+  end.
+
+Fixpoint type_comb_lookup
+    (Gamma : type_context)
+    (ctor : type)
+    {struct Gamma}
+  : option (TypeName * type * list string * list type) :=
+  match Gamma with
+  | [] => None
+  | BindCombType TN defctor holenames defargs :: rest =>
+      if type_beq ctor defctor then
+        Some (TN, defctor, holenames, defargs)
+      else
+        type_comb_lookup rest ctor
+  | _ :: rest => type_comb_lookup rest ctor
+  end.
+
+Fixpoint infer_list
+    {A : Type}
+    (f : type_context -> A -> result type)
+    (Gamma : type_context)
+    (ts : list A)
+    {struct ts}
+  : result (list type) :=
+  match ts with
+  | [] => Ok []
+  | t :: rest =>
+      match f Gamma t with
+      | Err e => Err e
+      | Ok T =>
+          match infer_list f Gamma rest with
+          | Err e => Err e
+          | Ok Ts => Ok (T :: Ts)
+          end
+      end
+  end.
+
+Fixpoint comb_type_declared (Gamma : type_context) (TN : TypeName) : bool :=
+  match Gamma with
+  | [] => false
+  | BindCombType TN' _ _ _ :: rest =>
+      if eqb TN TN' then true else comb_type_declared rest TN
+  | _ :: rest => comb_type_declared rest TN
+  end.
+
+Definition type_abbr_declared (Gamma : type_context) (TN : TypeName) : bool :=
+  match type_abbr_lookup Gamma TN with
+  | Some _ => true
+  | None => false
+  end.
+
+Fixpoint comb_type_closed (Gamma : type_context) (TN : TypeName) : bool :=
+  match Gamma with
+  | [] => false
+  | CloseCombType TN' :: rest =>
+      if eqb TN TN' then true else comb_type_closed rest TN
+  | _ :: rest => comb_type_closed rest TN
+  end.
+
+Definition type_declared (Gamma : type_context) (TN : TypeName) : bool :=
+  comb_type_declared Gamma TN || type_abbr_declared Gamma TN.
+
+Fixpoint norm_type_fuel
+    (fuel : nat)
+    (visited : list TypeName)
+    (Gamma : type_context)
+    (T : type)
+  : result type :=
+  match fuel with
+  | 0 => Err Err_InvalidType
+  | S fuel' =>
+      let fix norm_types (Ts : list type) : result (list type) :=
+          match Ts with
+          | [] => Ok []
+          | T1 :: rest =>
+              match norm_type_fuel fuel' visited Gamma T1 with
+              | Err e => Err e
+              | Ok T1N =>
+                  match norm_types rest with
+                  | Err e => Err e
+                  | Ok restN => Ok (T1N :: restN)
+                  end
+              end
+          end
+      in
+      match T with
+      | T_Hole X => Ok (T_Hole X)
+      | T_Elem e => Ok (T_Elem e)
+      | T_Prim p => Ok (T_Prim p)
+      | T_Abbr X =>
+          if typename_mem X visited then
+            Err (Err_CyclicTypeAbbr X)
+          else
+            match type_abbr_lookup Gamma X with
+            | None => Err (Err_UnboundTypeAbbr X)
+            | Some T' =>
+                norm_type_fuel fuel' (X :: visited) Gamma T'
+            end
+      | T_TRep T1 =>
+          match norm_type_fuel fuel' visited Gamma T1 with
+          | Err e => Err e
+          | Ok T1N => Ok (T_TRep T1N)
+          end
+      | T_Prod Ts =>
+          match norm_types Ts with
+          | Err e => Err e
+          | Ok [] => Ok T_Unit
+          | Ok [T1] => Ok T1
+          | Ok TsN => Ok (T_Prod TsN)
+          end
+      | T_Comb X Ts =>
+          match norm_types Ts with
+          | Err e => Err e
+          | Ok TsN => Ok (T_Comb X TsN)
+          end
+      end
+  end.
+
+Definition norm_type (Gamma : type_context) (T : type) : result type :=
+  norm_type_fuel
+    (S (type_size T + type_context_size Gamma))
+    []
+    Gamma
+    T.
+
+Fixpoint norm_list (Gamma : type_context) (ts : list type) : result (list type) :=
+  match ts with
+  | [] => Ok []
+  | t :: rest =>
+      match norm_type Gamma t with
+      | Err e => Err e
+      | Ok tN =>
+          match norm_list Gamma rest with
+          | Err e => Err e
+          | Ok restN => Ok (tN :: restN)
+          end
+      end
+  end.
+
+Fixpoint norm_comb_list
+    (Gamma : type_context)
+    (ts : list type)
+  : result (list type) :=
+  match ts with
+  | [] => Ok []
+  | t :: rest =>
+      match norm_type Gamma t with
+      | Err e => Err e
+      | Ok tN =>
+          if contains_prim tN then
+            Err (Err_UsePrimInDeclComb tN)
+          else
+            match norm_comb_list Gamma rest with
+            | Err e => Err e
+            | Ok restN => Ok (tN :: restN)
+            end
+      end
+  end.
+
+Definition norm_type_beq
+    (Gamma : type_context)
+    (T1 T2 : type)
+  : result bool :=
+  match norm_type Gamma T1 with
+  | Err e => Err e
+  | Ok N1 =>
+      match norm_type Gamma T2 with
+      | Err e => Err e
+      | Ok N2 => Ok (type_beq N1 N2)
+      end
+  end.
+
+Definition value_beq
+    (type_eq : type -> type -> result bool)
+    (value_eq : value -> value -> bool)
+    (v1 v2 : value)
+  : result bool :=
+  match v1, v2 with
+  | V_Elem e1, V_Elem e2 => Ok (eqb e1 e2)
+  | V_Prim p1, V_Prim p2 => Ok (prim_beq p1 p2)
+  | V_TRep T1, V_TRep T2 => type_eq T1 T2
+  | V_Prod vs1, V_Prod vs2 => Ok (list_eqb value_eq vs1 vs2)
+  | V_Comb ctor1 args1, V_Comb ctor2 args2 =>
+      Ok (value_eq ctor1 ctor2 && list_eqb value_eq args1 args2)
+  | _, _ => Ok false
+  end.
+
+Definition type_subst : Type := list (string * type).
+
+Fixpoint type_hole_lookup (subst : type_subst) (X : string) : option type :=
+  match subst with
+  | [] => None
+  | (Y, T) :: rest =>
+      if eqb X Y then Some T else type_hole_lookup rest X
+  end.
+
 Fixpoint unify_type_fuel
     (fuel : nat)
     (subst : type_subst)
     (ptrn actual : type)
   : result type_subst :=
-
   match fuel with
-  | 0 =>
-      Err Err_InvalidType
-
+  | 0 => Err Err_InvalidType
   | S fuel' =>
       match ptrn with
-
-      (* Унификация типовой дыры. *)
-      | T_Hole x =>
-          match type_hole_lookup subst x with
-
-          (* Дыра уже была связана. *)
+      | T_Hole X =>
+          match type_hole_lookup subst X with
           | Some T =>
-              if type_beq T actual
-              then Ok subst
-              else Err (Err_TypeMismatch T actual)
-
-          (* Первое вхождение дыры. *)
-          | None =>
-              Ok ((x, actual) :: subst)
+              if type_beq T actual then
+                Ok subst
+              else
+                Err (Err_TypeMismatch T actual)
+          | None => Ok ((X, actual) :: subst)
           end
-
-      (* Аббревиатуры должны быть нормализованы заранее. *)
       | T_Abbr X =>
           match actual with
           | T_Abbr Y =>
-              if eqb X Y
-              then Ok subst
-              else Err (Err_TypeMismatch ptrn actual)
-
-          | _ =>
-              Err (Err_TypeMismatch ptrn actual)
+              if eqb X Y then
+                Ok subst
+              else
+                Err (Err_TypeMismatch ptrn actual)
+          | _ => Err (Err_TypeMismatch ptrn actual)
           end
-
       | T_Elem e1 =>
           match actual with
           | T_Elem e2 =>
-              if eqb e1 e2
-              then Ok subst
-              else Err (Err_TypeMismatch ptrn actual)
-
-          | _ =>
-              Err (Err_TypeMismatch ptrn actual)
+              if eqb e1 e2 then
+                Ok subst
+              else
+                Err (Err_TypeMismatch ptrn actual)
+          | _ => Err (Err_TypeMismatch ptrn actual)
           end
-
       | T_Prim p1 =>
           match actual with
           | T_Prim p2 =>
-              if prim_beq p1 p2
-              then Ok subst
-              else Err (Err_TypeMismatch ptrn actual)
-
-          | _ =>
-              Err (Err_TypeMismatch ptrn actual)
+              if prim_beq p1 p2 then
+                Ok subst
+              else
+                Err (Err_TypeMismatch ptrn actual)
+          | _ => Err (Err_TypeMismatch ptrn actual)
           end
-
       | T_TRep ptrn1 =>
           match actual with
           | T_TRep actual1 =>
-              unify_type_fuel
-                fuel'
-                subst
-                ptrn1
-                actual1
-
-          | _ =>
-              Err (Err_TypeMismatch ptrn actual)
+              unify_type_fuel fuel' subst ptrn1 actual1
+          | _ => Err (Err_TypeMismatch ptrn actual)
           end
-
       | T_Prod ptrns =>
           match actual with
           | T_Prod actuals =>
-
               let fix unify_product_elements
                   (subst0 : type_subst)
                   (ptrns0 actuals0 : list type)
                   {struct ptrns0}
                   : result type_subst :=
-
                   match ptrns0, actuals0 with
-                  | [], [] =>
-                      Ok subst0
-
-                  | ptrn0 :: ptrn_rest,
-                    actual0 :: actual_rest =>
-
-                      match unify_type_fuel
-                              fuel'
-                              subst0
-                              ptrn0
-                              actual0
+                  | [], [] => Ok subst0
+                  | ptrn0 :: ptrn_rest, actual0 :: actual_rest =>
+                      match
+                        unify_type_fuel fuel' subst0 ptrn0 actual0
                       with
-                      | Err e =>
-                          Err e
-
+                      | Err e => Err e
                       | Ok subst1 =>
                           unify_product_elements
                             subst1
                             ptrn_rest
                             actual_rest
                       end
-
                   | _, _ =>
-                      Err
-                        (Err_TypeListMismatch
-                           ptrns
-                           actuals)
+                      Err (Err_TypeListMismatch ptrns actuals)
                   end
-
-              in unify_product_elements
-                   subst
-                   ptrns
-                   actuals
-
-          | _ =>
-              Err (Err_TypeMismatch ptrn actual)
+              in
+              unify_product_elements subst ptrns actuals
+          | _ => Err (Err_TypeMismatch ptrn actual)
           end
-
       | T_Comb ptrn_name ptrn_args =>
           match actual with
           | T_Comb actual_name actual_args =>
-
-              if eqb ptrn_name actual_name
-              then
+              if eqb ptrn_name actual_name then
                 let fix unify_comb_arguments
                     (subst0 : type_subst)
                     (ptrns0 actuals0 : list type)
                     {struct ptrns0}
                     : result type_subst :=
-
                     match ptrns0, actuals0 with
-                    | [], [] =>
-                        Ok subst0
-
-                    | ptrn0 :: ptrn_rest,
-                      actual0 :: actual_rest =>
-
-                        match unify_type_fuel
-                                fuel'
-                                subst0
-                                ptrn0
-                                actual0
+                    | [], [] => Ok subst0
+                    | ptrn0 :: ptrn_rest, actual0 :: actual_rest =>
+                        match
+                          unify_type_fuel fuel' subst0 ptrn0 actual0
                         with
-                        | Err e =>
-                            Err e
-
+                        | Err e => Err e
                         | Ok subst1 =>
                             unify_comb_arguments
                               subst1
                               ptrn_rest
                               actual_rest
                         end
-
                     | _, _ =>
                         Err
                           (Err_TypeListMismatch
                              ptrn_args
                              actual_args)
                     end
-
-                in unify_comb_arguments
-                     subst
-                     ptrn_args
-                     actual_args
-
+                in
+                unify_comb_arguments subst ptrn_args actual_args
               else
                 Err (Err_TypeMismatch ptrn actual)
-
-          | _ =>
-              Err (Err_TypeMismatch ptrn actual)
+          | _ => Err (Err_TypeMismatch ptrn actual)
           end
       end
   end.
@@ -599,37 +508,19 @@ Definition unify_type
     (subst : type_subst)
     (ptrn actual : type)
   : result type_subst :=
-  unify_type_fuel
-    (S (type_size ptrn))
-    subst
-    ptrn
-    actual.
+  unify_type_fuel (S (type_size ptrn)) subst ptrn actual.
 
-(*
-  Унификация списка шаблонов со списком фактических типов.
-
-  Подстановка передается от одного элемента к следующему,
-  поэтому повторные вхождения одной дыры обязаны иметь
-  одинаковый фактический тип.
-*)
 Fixpoint unify_type_list_aux
     (subst : type_subst)
     (ptrns actuals : list type)
     (original_ptrns original_actuals : list type)
     {struct ptrns}
   : result type_subst :=
-
   match ptrns, actuals with
-  | [], [] =>
-      Ok subst
-
-  | ptrn :: ptrn_rest,
-    actual :: actual_rest =>
-
+  | [], [] => Ok subst
+  | ptrn :: ptrn_rest, actual :: actual_rest =>
       match unify_type subst ptrn actual with
-      | Err e =>
-          Err e
-
+      | Err e => Err e
       | Ok subst' =>
           unify_type_list_aux
             subst'
@@ -638,7 +529,6 @@ Fixpoint unify_type_list_aux
             original_ptrns
             original_actuals
       end
-
   | _, _ =>
       Err
         (Err_TypeListMismatch
@@ -646,50 +536,38 @@ Fixpoint unify_type_list_aux
            original_actuals)
   end.
 
-Definition unify_type_list (subst : type_subst) (ptrns actuals : list type)
-  : result type_subst 
-  := unify_type_list_aux subst ptrns actuals ptrns actuals.
+Definition unify_type_list
+    (subst : type_subst)
+    (ptrns actuals : list type)
+  : result type_subst :=
+  unify_type_list_aux
+    subst
+    ptrns
+    actuals
+    ptrns
+    actuals.
 
-
-(*
-  Основной интерфейс унификации.
-
-  Для совместимости с infer_comb_type_info функция по-прежнему
-  возвращает список фактических типов.
-
-  Внутри, однако, строится полноценная структурная подстановка.
-*)
 Definition unify_generic_list
     (plst arglst : list type)
   : result (list type) :=
-
-  match unify_type_list
-          []
-          plst
-          arglst
-  with
-  | Ok _ =>
-      Ok arglst
-
-  | Err e =>
-      Err e
+  match unify_type_list [] plst arglst with
+  | Ok _ => Ok arglst
+  | Err e => Err e
   end.
 
-Definition infer_type_app (Γ : type_context) (t pt : type) : result type :=
+Definition infer_type_app
+    (Gamma : type_context)
+    (t pt : type)
+  : result type :=
   match t, pt with
-  | T_Prod [], T_Prim _ => Err (TypeErr_InvalidApp t pt)
-  | T_Prod (x :: xs), T_Prim Prm_Left => norm_type Γ x
-  | T_Prod xs, T_Prim Prm_Right => norm_type Γ (last xs T_Unit)
-  | _, _ => Err (TypeErr_InvalidApp t pt)
-  end.
-
-Fixpoint contains_hole (T : type) : bool :=
-  match T with
-  | T_Hole _ => true
-  | T_TRep T => contains_hole T
-  | T_Prod Ts => existsb contains_hole Ts
-  | T_Comb _ Ts => existsb contains_hole Ts
-  | _ => false
+  | T_Prod [], T_Prim _ =>
+      Err (TypeErr_InvalidApp t pt)
+  | T_Prod (x :: _), T_Prim Prm_Left =>
+      norm_type Gamma x
+  | T_Prod xs, T_Prim Prm_Right =>
+      norm_type Gamma (last xs T_Unit)
+  | _, _ =>
+      Err (TypeErr_InvalidApp t pt)
   end.
 
 Fixpoint holenames_in_subst_lookup
@@ -698,278 +576,288 @@ Fixpoint holenames_in_subst_lookup
   : result (list type) :=
   match holenames with
   | [] => Ok []
-  | str :: rest => 
-      match holenames_in_subst_lookup rest subst with
-      | Ok ts =>
-          match type_hole_lookup subst str with
-          | Some t => Ok (t :: ts) 
-          | None => Err (Err_UnboundHole str)
+  | X :: rest =>
+      match type_hole_lookup subst X with
+      | None => Err (Err_UnboundHole X)
+      | Some T =>
+          match holenames_in_subst_lookup rest subst with
+          | Err e => Err e
+          | Ok Ts => Ok (T :: Ts)
           end
-      | Err e => Err e
       end
   end.
 
-
-(* Функция вывода и проверки типов *)
-Fixpoint infer_type_expr (Γ : type_context) (tm : expr) {struct tm} : result type :=
-  let infer_comb_type_decl_info Γ (ctor : expr) 
-    : result (TypeName * type * list string * list type) :=
-  match infer_type_expr Γ ctor with
-  | Ok ctortype => 
-      match type_comb_lookup Γ ctortype with
-      | Some (tn, ctortype, holenames, argsptrn) => 
-          Ok (tn, ctortype, holenames, argsptrn)
-      | None => Err (Err_UnknownCombSignature)
+Fixpoint infer_type_expr
+    (Gamma : type_context)
+    (tm : expr)
+    {struct tm}
+  : result type :=
+  let infer_comb_type_decl_info
+      (Gamma0 : type_context)
+      (ctor : expr)
+      : result (TypeName * type * list string * list type) :=
+      match infer_type_expr Gamma0 ctor with
+      | Err e => Err e
+      | Ok ctortype =>
+          match type_comb_lookup Gamma0 ctortype with
+          | None => Err Err_UnknownCombSignature
+          | Some (tn, declared_ctor_type, holenames, argsptrn) =>
+              Ok (tn, declared_ctor_type, holenames, argsptrn)
+          end
       end
-  | Err e => Err e
-  end
   in
-  let infer_comb_type_info Γ (ctor : expr) (arglst : list expr) 
-    : result (TypeName * type * list type) :=
-  match infer_comb_type_decl_info Γ ctor with
-  | Ok (tn, ctortype, holenames, argsptrn) => 
-      match infer_list infer_type_expr Γ arglst with
-      | Ok argtypes =>
-          match unify_type_list [] argsptrn argtypes with
-          | Ok argsubst =>
-              match holenames_in_subst_lookup holenames argsubst with
-              | Ok typeargs =>
-                   Ok (tn, ctortype, typeargs)
-              | Err e => Err e
-              end
+  let infer_comb_type_info
+      (Gamma0 : type_context)
+      (ctor : expr)
+      (arglst : list expr)
+      : result (TypeName * type * list type) :=
+      match infer_comb_type_decl_info Gamma0 ctor with
+      | Err e => Err e
+      | Ok (tn, ctortype, holenames, argsptrn) =>
+          match infer_list infer_type_expr Gamma0 arglst with
           | Err e => Err e
+          | Ok argtypes =>
+              match unify_type_list [] argsptrn argtypes with
+              | Err e => Err e
+              | Ok argsubst =>
+                  match
+                    holenames_in_subst_lookup holenames argsubst
+                  with
+                  | Err e => Err e
+                  | Ok typeargs =>
+                      Ok (tn, ctortype, typeargs)
+                  end
+              end
           end
-      | Err e => Err e
       end
-  | Err e => Err e
-  end
   in
-  let infer_comb_prim_app (ctor : expr) (arglst : list expr) (prm : prim)
-    : result type :=
-  match infer_comb_type_info Γ ctor arglst with
-  | Ok _ =>
-      match infer_type_expr Γ ctor with
-      | Ok ctortype => 
-        match infer_list infer_type_expr Γ arglst with
-        | Ok argtype =>
-          match prm with
-          | Prm_Left => norm_type Γ ctortype
-          | Prm_Right => norm_type Γ (T_Prod argtype)
-          end
-        | Err e => Err e
-        end
+  let infer_comb_prim_app
+      (ctor : expr)
+      (arglst : list expr)
+      (prm : prim)
+      : result type :=
+      match infer_comb_type_info Gamma ctor arglst with
       | Err e => Err e
+      | Ok _ =>
+          match infer_type_expr Gamma ctor with
+          | Err e => Err e
+          | Ok ctortype =>
+              match
+                infer_list infer_type_expr Gamma arglst
+              with
+              | Err e => Err e
+              | Ok argtypes =>
+                  match prm with
+                  | Prm_Left => norm_type Gamma ctortype
+                  | Prm_Right =>
+                      norm_type Gamma (T_Prod argtypes)
+                  end
+              end
+          end
       end
-  | Err e => Err e
-  end
   in
   match tm with
-  | E_Var x => Err Err_NoUseUnfoldProg
-  | E_Elem u => Ok (T_Elem u)
+  | E_Var X => Err (Err_UnexpandedVar X)
+  | E_Elem e => Ok (T_Elem e)
   | E_Prim p => Ok (T_Prim p)
-  | E_TRep T => 
-      match norm_type Γ (T_TRep T) with
-      | Ok nrmty => 
-        if contains_hole nrmty then
-          Err (Err_UseHoleInExpr tm)
-        else
-          Ok nrmty
+  | E_TRep T =>
+      match norm_type Gamma (T_TRep T) with
       | Err e => Err e
+      | Ok TN =>
+          if contains_hole TN then
+            Err (Err_UseHoleInExpr tm)
+          else
+            Ok TN
       end
   | E_Prod [] => Ok T_Unit
-  | E_Prod [x] => 
-      match infer_type_expr Γ x with
-      | Ok T => norm_type Γ T
+  | E_Prod [x] =>
+      match infer_type_expr Gamma x with
       | Err e => Err e
+      | Ok T => norm_type Gamma T
       end
-  | E_Prod (p1 :: ps) =>
-      match infer_list infer_type_expr Γ (p1 :: ps) with
-      | Ok P => norm_type Γ (T_Prod P)
+  | E_Prod (x :: xs) =>
+      match
+        infer_list infer_type_expr Gamma (x :: xs)
+      with
       | Err e => Err e
+      | Ok Ts => norm_type Gamma (T_Prod Ts)
       end
-  | E_Comb ctor arglst => 
-      match infer_comb_type_info Γ ctor arglst with
-      | Ok (tn, _, typeargs) => 
-          let trep_replace (t : type) : type :=
-            match t with
-            | T_TRep p => p
-            | _ => t
-            end
+  | E_Comb ctor arglst =>
+      match infer_comb_type_info Gamma ctor arglst with
+      | Err e => Err e
+      | Ok (tn, _, typeargs) =>
+          let trep_replace (T : type) : type :=
+              match T with
+              | T_TRep T1 => T1
+              | _ => T
+              end
           in
-            Ok (T_Comb tn (map trep_replace typeargs))
-      | Err e => Err e
+          Ok (T_Comb tn (map trep_replace typeargs))
       end
-  | E_App (E_Comb ctor arglst) (E_Prim prm) => 
+  | E_App (E_Comb ctor arglst) (E_Prim prm) =>
       infer_comb_prim_app ctor arglst prm
-  | E_App a b => 
-    match infer_type_expr Γ a with
-    | Err e => Err e
-    | tares =>
-      match infer_type_expr Γ b with
+  | E_App a b =>
+      match infer_type_expr Gamma a with
       | Err e => Err e
-      | tbres =>
-        match tares, tbres with
-        | Ok ta, Ok tb => infer_type_app Γ ta tb
-        | Err e, _ => Err e
-        | Ok _, Err e => Err e
-        end
+      | Ok ta =>
+          match infer_type_expr Gamma b with
+          | Err e => Err e
+          | Ok tb => infer_type_app Gamma ta tb
+          end
       end
-    end
   end.
 
-(* Функция вычисления для выражений *) 
-Fixpoint eval_expr (Sigma : eval_context) (tm : expr) {struct tm} : result value :=
+Fixpoint eval_expr
+    (tm : expr)
+    {struct tm}
+  : result value :=
   match tm with
-  | E_Var x => Err Err_NoUseUnfoldProg
+  | E_Var X => Err (Err_UnexpandedVar X)
   | E_Elem e => Ok (V_Elem e)
   | E_Prim p => Ok (V_Prim p)
-  | E_TRep T => 
+  | E_TRep T =>
       match norm_type [] T with
+      | Err e => Err e
       | Ok TN => Ok (V_TRep TN)
-      | Err e => Err e
       end
-  | E_Prod p =>
-      match p with
+  | E_Prod es =>
+      match es with
       | [] => Ok V_Unit
-      | [x] => eval_expr Sigma x
+      | [e] => eval_expr e
       | _ =>
-          match (eval_expr_list eval_expr Sigma p) with
-          | Ok l => Ok (V_Prod l)
+          match eval_expr_list eval_expr es with
           | Err e => Err e
+          | Ok vs => Ok (V_Prod vs)
           end
       end
-  | E_Comb inctor args =>
-      match (eval_expr Sigma inctor) with
-      | Ok ctor =>
-          match (eval_expr_list eval_expr Sigma args) with
-          | Ok a => Ok (V_Comb ctor a)
-          | Err e => Err e
-          end
+  | E_Comb ctor args =>
+      match eval_expr ctor with
       | Err e => Err e
+      | Ok ctor_value =>
+          match eval_expr_list eval_expr args with
+          | Err e => Err e
+          | Ok arg_values =>
+              Ok (V_Comb ctor_value arg_values)
+          end
       end
   | E_App a b =>
-      match eval_expr Sigma a, eval_expr Sigma b with
-      | Ok (V_Prod []), Ok (V_Prim _) => Err (ExprErr_InvalidApp a b)
-      | Ok (V_Prod (x :: xs)), Ok (V_Prim Prm_Left) => Ok x
-      | Ok (V_Prod xs), Ok (V_Prim Prm_Right) => Ok (last xs V_Unit)
-      | Ok (V_Comb ctor _), Ok (V_Prim Prm_Left) => Ok ctor
-      | Ok (V_Comb _ args), Ok (V_Prim Prm_Right) => 
-        match args with
-        | [] => Ok V_Unit
-        | [x] => Ok x
-        | xs => Ok (V_Prod xs)
-        end
-      | Ok _, Ok _ => Err (ExprErr_InvalidApp a b)
-      | Err e, _ => Err e
-      | Ok _, Err e => Err e 
+      match eval_expr a with
+      | Err e => Err e
+      | Ok va =>
+          match eval_expr b with
+          | Err e => Err e
+          | Ok vb =>
+              match va, vb with
+              | V_Prod [], V_Prim _ =>
+                  Err (ExprErr_InvalidApp a b)
+              | V_Prod (x :: _), V_Prim Prm_Left => Ok x
+              | V_Prod xs, V_Prim Prm_Right =>
+                  Ok (last xs V_Unit)
+              | V_Comb ctor _, V_Prim Prm_Left => Ok ctor
+              | V_Comb _ args, V_Prim Prm_Right =>
+                  match args with
+                  | [] => Ok V_Unit
+                  | [x] => Ok x
+                  | xs => Ok (V_Prod xs)
+                  end
+              | _, _ => Err (ExprErr_InvalidApp a b)
+              end
+          end
       end
   end.
 
-Definition exec_command (st : machine_state) (cmd : command) : result machine_state :=
-  let Γ := ms_type_ctx st in
-  let Sigma := ms_eval_ctx st in
+Definition exec_command
+    (st : machine_state)
+    (cmd : command)
+  : result machine_state :=
+  let Gamma := ms_type_ctx st in
   match cmd with
-  | C_DeclVar x inex => 
-      match var_value_lookup Sigma x, var_type_lookup Γ x with
-      | None, None =>
-          match infer_type_expr Γ inex with
+  | C_DeclVar _ rhs =>
+      match infer_type_expr Gamma rhs with
+      | Err e => Err e
+      | Ok _ =>
+          match eval_expr rhs with
           | Err e => Err e
-          | tpres => 
-              match tpres, eval_expr Sigma inex with
-              | Ok t, Ok v => Ok {| 
-                  ms_type_ctx := (BindVarType x t :: Γ);
-                  ms_eval_ctx := (BindVarValue x v :: Sigma);
-                  ms_last_type := ms_last_type st;
-                  ms_last_value := ms_last_value st |}
-              | Err er, _ => Err er
-              | _, Err er => Err er
-              end
+          | Ok _ => Ok st
           end
-      | _, _ => Err (Err_DuplicateVar x)
       end
-  | C_NewTypeAbbr x T => 
-      match type_declared Γ x with
-      | true => Err (Err_DuplicateType x)
-      | false => 
-        match norm_type Γ T with
-        | Ok TN => Ok {| 
-              ms_type_ctx := (BindTypeAbbr x TN :: Γ);
-              ms_eval_ctx := Sigma;
-              ms_last_type := ms_last_type st;
-              ms_last_value := ms_last_value st |}
-        | Err e => Err e
-        end
-      end
-  | C_DeclCombVariant tn ctortype holenames args => 
-      if comb_type_closed Γ tn then
-        Err (Err_CombTypeClosed tn)
+  | C_NewTypeAbbr X T =>
+      if type_declared Gamma X then
+        Err (Err_DuplicateType X)
       else
-      if type_abbr_declared Γ tn then
+        match norm_type Gamma T with
+        | Err e => Err e
+        | Ok TN =>
+            Ok
+              {| ms_type_ctx := BindTypeAbbr X TN :: Gamma;
+                 ms_last_type := ms_last_type st;
+                 ms_last_value := ms_last_value st |}
+        end
+  | C_DeclCombVariant tn ctortype holenames args =>
+      if comb_type_closed Gamma tn then
+        Err (Err_CombTypeClosed tn)
+      else if type_abbr_declared Gamma tn then
         Err (Err_DuplicateType tn)
       else
-      match norm_type Γ ctortype with
-      | Ok nrmctortype =>
-        match type_comb_lookup Γ nrmctortype with
-        | Some (oldtn, _, _, _) => Err (Err_DuplicateCombSignature oldtn nrmctortype)
-        | None => 
-            if contains_prim nrmctortype then
-              Err (Err_UsePrimInDeclComb nrmctortype)
-            else
-            match norm_comb_list norm_type Γ args with
-            | Ok nrmargs =>
-                Ok {| 
-                    ms_type_ctx := (BindCombType tn nrmctortype holenames nrmargs :: Γ);
-                    ms_eval_ctx := Sigma;
-                    ms_last_type := ms_last_type st;
-                    ms_last_value := ms_last_value st |}
-            | Err e => Err e
+        match norm_type Gamma ctortype with
+        | Err e => Err e
+        | Ok nrmctortype =>
+            match type_comb_lookup Gamma nrmctortype with
+            | Some (oldtn, _, _, _) =>
+                Err
+                  (Err_DuplicateCombSignature
+                     oldtn
+                     nrmctortype)
+            | None =>
+                if contains_prim nrmctortype then
+                  Err
+                    (Err_UsePrimInDeclComb
+                       nrmctortype)
+                else
+                  match norm_comb_list Gamma args with
+                  | Err e => Err e
+                  | Ok nrmargs =>
+                      Ok
+                        {| ms_type_ctx :=
+                             BindCombType
+                               tn
+                               nrmctortype
+                               holenames
+                               nrmargs
+                             :: Gamma;
+                           ms_last_type := ms_last_type st;
+                           ms_last_value := ms_last_value st |}
+                  end
             end
         end
-      | Err e => Err e
-      end
   | C_Eval e =>
-      match infer_type_expr Γ e with
+      match infer_type_expr Gamma e with
       | Err er => Err er
-      | tres =>
-          match eval_expr Sigma e with
+      | Ok T =>
+          match eval_expr e with
           | Err er => Err er
-          | eres =>
-            match tres, eres with
-            | Ok T, Ok v => Ok {| 
-                ms_type_ctx := Γ;
-                ms_eval_ctx := Sigma;
-                ms_last_type := T;
-                ms_last_value := v |}
-            | Err er, _ => Err er
-            | _, Err er => Err er
-            end
+          | Ok v =>
+              Ok
+                {| ms_type_ctx := Gamma;
+                   ms_last_type := T;
+                   ms_last_value := v |}
           end
       end
-  | C_CloseCombType tn => 
-      if negb (comb_type_declared Γ tn) then
+  | C_CloseCombType tn =>
+      if negb (comb_type_declared Gamma tn) then
         Err (Err_CloseUnknownCombType tn)
-      else if comb_type_closed Γ tn then 
+      else if comb_type_closed Gamma tn then
         Err (Err_CombTypeAlreadyClosed tn)
       else
-        Ok {| 
-          ms_type_ctx := (CloseCombType tn :: Γ);
-          ms_eval_ctx := Sigma;
-          ms_last_type := ms_last_type st;
-          ms_last_value := ms_last_value st |}
+        Ok
+          {| ms_type_ctx := CloseCombType tn :: Gamma;
+             ms_last_type := ms_last_type st;
+             ms_last_value := ms_last_value st |}
   end.
 
 Definition prog : Type := list command.
-
-(*
-  Окружение уже раскрытых определений типов.
-  В отличие от type_context, здесь хранятся именно определения имён типов.
-*)
-Definition type_def_context : Type :=
-  list (TypeName * type).
-
-(* Окружение уже раскрытых определений термов. *)
-Definition expr_def_context : Type :=
-  list (VarName * expr).
+Definition type_def_context : Type := list (TypeName * type).
+Definition expr_def_context : Type := list (VarName * expr).
 
 Fixpoint lookup_type_def
     (Delta : type_def_context)
@@ -978,206 +866,311 @@ Fixpoint lookup_type_def
   match Delta with
   | [] => None
   | (Y, T) :: rest =>
-      if eqb X Y
-      then Some T
-      else lookup_type_def rest X
+      if eqb X Y then Some T else lookup_type_def rest X
   end.
 
 Fixpoint lookup_expr_def
     (Sigma : expr_def_context)
-    (x : VarName)
+    (X : VarName)
   : option expr :=
   match Sigma with
   | [] => None
-  | (y, tm) :: rest =>
-      if eqb x y
-      then Some tm
-      else lookup_expr_def rest x
+  | (Y, tm) :: rest =>
+      if eqb X Y then Some tm else lookup_expr_def rest X
   end.
 
-Fixpoint unfold_list
-          {A : Type} 
-          (f : expr_def_context -> type_def_context -> A -> result A)
-          (Sigma : expr_def_context)
-          (Delta : type_def_context)
-          (xs : list A) 
-          : result (list A) :=
-  match xs with
-  | [] => Ok []
-  | x :: rest =>
-     match f Sigma Delta x with
-     | Ok xn =>
-        match unfold_list f Sigma Delta rest with
-        | Ok newrest => Ok (xn :: newrest)
-        | Err e => Err e
-        end
-     | Err e => Err e
-     end
+Definition expr_def_declared
+    (Sigma : expr_def_context)
+    (X : VarName)
+  : bool :=
+  match lookup_expr_def Sigma X with
+  | Some _ => true
+  | None => false
+  end.
+
+Definition type_def_declared
+    (Delta : type_def_context)
+    (X : TypeName)
+  : bool :=
+  match lookup_type_def Delta X with
+  | Some _ => true
+  | None => false
   end.
 
 Fixpoint unfold_type
-    (Sigma : expr_def_context)
     (Delta : type_def_context)
-    (T : type) {struct T}
+    (T : type)
+    {struct T}
   : result type :=
   match T with
   | T_Abbr X =>
       match lookup_type_def Delta X with
-      | Some T' => Ok T'
       | None => Err (Err_UnboundTypeAbbr X)
+      | Some T' => Ok T'
       end
-  | T_Hole vn => Ok (T_Hole vn)
+  | T_Hole X => Ok (T_Hole X)
   | T_Elem e => Ok (T_Elem e)
   | T_Prim p => Ok (T_Prim p)
-
-  | T_TRep T1 => 
-      match unfold_type Sigma Delta T1 with
-      | Ok TN => Ok (T_TRep TN)
+  | T_TRep T1 =>
+      match unfold_type Delta T1 with
       | Err e => Err e
+      | Ok T1' => Ok (T_TRep T1')
       end
-
   | T_Prod Ts =>
-        match unfold_list unfold_type Sigma Delta Ts with
-        | Ok newts => Ok (T_Prod newts)
-        | Err e => Err e
-        end
-  | T_Comb tn lst => 
-      match unfold_list unfold_type Sigma Delta lst with
-      | Ok newlst => Ok (T_Comb tn newlst)
+      let fix unfold_types
+          (xs : list type)
+          : result (list type) :=
+          match xs with
+          | [] => Ok []
+          | x :: rest =>
+              match unfold_type Delta x with
+              | Err e => Err e
+              | Ok x' =>
+                  match unfold_types rest with
+                  | Err e => Err e
+                  | Ok rest' => Ok (x' :: rest')
+                  end
+              end
+          end
+      in
+      match unfold_types Ts with
       | Err e => Err e
+      | Ok Ts' => Ok (T_Prod Ts')
+      end
+  | T_Comb tn Ts =>
+      let fix unfold_types
+          (xs : list type)
+          : result (list type) :=
+          match xs with
+          | [] => Ok []
+          | x :: rest =>
+              match unfold_type Delta x with
+              | Err e => Err e
+              | Ok x' =>
+                  match unfold_types rest with
+                  | Err e => Err e
+                  | Ok rest' => Ok (x' :: rest')
+                  end
+              end
+          end
+      in
+      match unfold_types Ts with
+      | Err e => Err e
+      | Ok Ts' => Ok (T_Comb tn Ts')
       end
   end.
 
 Fixpoint unfold_expr
     (Sigma : expr_def_context)
     (Delta : type_def_context)
-    (tm : expr) {struct tm}
+    (tm : expr)
+    {struct tm}
   : result expr :=
   match tm with
-  | E_Var x =>
-      match lookup_expr_def Sigma x with
+  | E_Var X =>
+      match lookup_expr_def Sigma X with
+      | None => Err (Err_UnboundVar X)
       | Some tm' => Ok tm'
-      | None => Err (Err_UnboundVar x)
       end
-      
   | E_Elem e => Ok (E_Elem e)
   | E_Prim p => Ok (E_Prim p)
-
   | E_TRep T =>
-      match unfold_type Sigma Delta T with
-      | Ok TN => Ok (E_TRep TN)
+      match unfold_type Delta T with
       | Err e => Err e
+      | Ok T' => Ok (E_TRep T')
       end
-
-  | E_Prod ts =>
-        match unfold_list unfold_expr Sigma Delta ts with
-        | Ok newts => Ok (E_Prod newts)
-        | Err e => Err e
-        end
-  
-  | E_Comb ctor args => 
-      match unfold_expr Sigma Delta ctor with
-      | Ok newctor => 
-          match unfold_list unfold_expr Sigma Delta args with
-          | Ok newargs => Ok (E_Comb newctor newargs)
-          | Err e => Err e
+  | E_Prod es =>
+      let fix unfold_exprs
+          (xs : list expr)
+          : result (list expr) :=
+          match xs with
+          | [] => Ok []
+          | x :: rest =>
+              match unfold_expr Sigma Delta x with
+              | Err e => Err e
+              | Ok x' =>
+                  match unfold_exprs rest with
+                  | Err e => Err e
+                  | Ok rest' => Ok (x' :: rest')
+                  end
+              end
           end
+      in
+      match unfold_exprs es with
       | Err e => Err e
+      | Ok es' => Ok (E_Prod es')
+      end
+  | E_Comb ctor args =>
+      match unfold_expr Sigma Delta ctor with
+      | Err e => Err e
+      | Ok ctor' =>
+          let fix unfold_exprs
+              (xs : list expr)
+              : result (list expr) :=
+              match xs with
+              | [] => Ok []
+              | x :: rest =>
+                  match unfold_expr Sigma Delta x with
+                  | Err e => Err e
+                  | Ok x' =>
+                      match unfold_exprs rest with
+                      | Err e => Err e
+                      | Ok rest' => Ok (x' :: rest')
+                      end
+                  end
+              end
+          in
+          match unfold_exprs args with
+          | Err e => Err e
+          | Ok args' => Ok (E_Comb ctor' args')
+          end
       end
   | E_App a b =>
-    match unfold_expr Sigma Delta a with
-    | Ok x => 
-        match unfold_expr Sigma Delta b with
-        | Ok y => Ok (E_App x y)
-        | Err e => Err e
-        end
-    | Err e => Err e
-    end
+      match unfold_expr Sigma Delta a with
+      | Err e => Err e
+      | Ok a' =>
+          match unfold_expr Sigma Delta b with
+          | Err e => Err e
+          | Ok b' => Ok (E_App a' b')
+          end
+      end
   end.
 
 Fixpoint unfold_prog_aux
     (Sigma : expr_def_context)
     (Delta : type_def_context)
-    (prg : prog) {struct prg}
+    (prg : prog)
+    {struct prg}
   : result prog :=
   match prg with
   | [] => Ok []
-
-  | C_DeclVar x rhs :: rest =>
-      match unfold_expr Sigma Delta rhs with
-      | Ok rhs' => 
-          match unfold_prog_aux ((x, rhs') :: Sigma) Delta rest with
-          | Ok restprg => Ok (C_DeclVar x rhs' :: restprg)
-          | Err e => Err e
-          end
-      | Err e => Err e
-      end
-
-  | C_NewTypeAbbr X T :: rest =>
-      match unfold_type Sigma Delta T with
-      | Ok T' => 
-          match unfold_prog_aux Sigma ((X, T') :: Delta) rest with
-          | Ok restprg => Ok (C_NewTypeAbbr X T' :: restprg)
-          | Err e => Err e
-          end
-      | Err e => Err e
-      end
-
-  | C_DeclCombVariant tn ctor holenames args :: rest =>
-      match unfold_type Sigma Delta ctor with
-      | Err e => Err e
-      | Ok newctor =>
-          match unfold_type Sigma Delta (T_Prod args) with
-          | Err e => Err e
-          | Ok (T_Prod newargs) => 
-            match unfold_prog_aux Sigma Delta rest with
-            | Ok restprg => Ok (C_DeclCombVariant tn newctor holenames newargs :: restprg)
+  | C_DeclVar X rhs :: rest =>
+      if expr_def_declared Sigma X then
+        Err (Err_DuplicateVar X)
+      else
+        match unfold_expr Sigma Delta rhs with
+        | Err e => Err e
+        | Ok rhs' =>
+            match
+              unfold_prog_aux
+                ((X, rhs') :: Sigma)
+                Delta
+                rest
+            with
             | Err e => Err e
+            | Ok rest' =>
+                Ok (C_DeclVar X rhs' :: rest')
             end
-          | Ok _ => Err Err_InvalidType
+        end
+  | C_NewTypeAbbr X T :: rest =>
+      if type_def_declared Delta X then
+        Err (Err_DuplicateType X)
+      else
+        match unfold_type Delta T with
+        | Err e => Err e
+        | Ok T' =>
+            match
+              unfold_prog_aux
+                Sigma
+                ((X, T') :: Delta)
+                rest
+            with
+            | Err e => Err e
+            | Ok rest' =>
+                Ok (C_NewTypeAbbr X T' :: rest')
+            end
+        end
+  | C_DeclCombVariant tn ctor holenames args :: rest =>
+      match unfold_type Delta ctor with
+      | Err e => Err e
+      | Ok ctor' =>
+          let fix unfold_types
+              (xs : list type)
+              : result (list type) :=
+              match xs with
+              | [] => Ok []
+              | x :: xs' =>
+                  match unfold_type Delta x with
+                  | Err e => Err e
+                  | Ok x' =>
+                      match unfold_types xs' with
+                      | Err e => Err e
+                      | Ok rest' => Ok (x' :: rest')
+                      end
+                  end
+              end
+          in
+          match unfold_types args with
+          | Err e => Err e
+          | Ok args' =>
+              match
+                unfold_prog_aux Sigma Delta rest
+              with
+              | Err e => Err e
+              | Ok rest' =>
+                  Ok
+                    (C_DeclCombVariant
+                       tn
+                       ctor'
+                       holenames
+                       args'
+                     :: rest')
+              end
           end
       end
-
-  | C_Eval e :: rest => 
+  | C_Eval e :: rest =>
       match unfold_expr Sigma Delta e with
+      | Err er => Err er
       | Ok e' =>
           match unfold_prog_aux Sigma Delta rest with
-          | Ok restprg => Ok (C_Eval e' :: restprg)
           | Err er => Err er
+          | Ok rest' => Ok (C_Eval e' :: rest')
           end
-      | Err er => Err er
       end
-      
   | C_CloseCombType tn :: rest =>
       match unfold_prog_aux Sigma Delta rest with
-      | Ok restprg => Ok (C_CloseCombType tn :: restprg)
-      | Err er => Err er
+      | Err e => Err e
+      | Ok rest' => Ok (C_CloseCombType tn :: rest')
       end
   end.
 
 Definition unfold_prog (prg : prog) : result prog :=
   unfold_prog_aux [] [] prg.
 
-Record Prg_Result := {prog_type : type; prog_val : value}.
+Record Prg_Result : Type := {
+  prog_type : type;
+  prog_val : value
+}.
 
-Fixpoint compile_prog_aux (st : machine_state) (prg : prog) {struct prg} : result machine_state :=
+Fixpoint compile_prog_aux
+    (st : machine_state)
+    (prg : prog)
+    {struct prg}
+  : result machine_state :=
   match prg with
   | [] => Ok st
-  | c :: rest =>
-      match exec_command st c with
-      | Ok st' => compile_prog_aux st' rest
+  | cmd :: rest =>
+      match exec_command st cmd with
       | Err e => Err e
+      | Ok st' => compile_prog_aux st' rest
       end
   end.
 
-Definition compile_prog (inprg : prog) : result Prg_Result :=
-  match unfold_prog inprg with
-  | Ok newprg => 
-      match compile_prog_aux initial_state newprg with
-      | Ok st => Ok {| prog_type := ms_last_type st; prog_val := ms_last_value st |}
-      | Err e => Err e
-      end
+Definition compile_prog
+    (input_program : prog)
+  : result Prg_Result :=
+  match unfold_prog input_program with
   | Err e => Err e
+  | Ok unfolded_program =>
+      match
+        compile_prog_aux initial_state unfolded_program
+      with
+      | Err e => Err e
+      | Ok st =>
+          Ok
+            {| prog_type := ms_last_type st;
+               prog_val := ms_last_value st |}
+      end
   end.
 
 (* Тривиальный пример хорошей программы *)
@@ -1431,5 +1424,4 @@ Example test_unify_product_length_error :
 Proof.
   reflexivity.
 Qed.
-
 
