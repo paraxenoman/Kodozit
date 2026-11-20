@@ -2,10 +2,16 @@
 
 Require Import Stdlib.Strings.String.
 Require Import Stdlib.Lists.List.
+Require Import ExtLib.Structures.Monad.
 Import ListNotations.
+Import MonadNotation.
 Open Scope list_scope.
 Open Scope string_scope.
 Open Scope bool_scope.
+Open Scope monad_scope.
+
+Set Implicit Arguments.
+Set Strict Implicit.
 
 Fixpoint list_eqb {A : Type} (feq : A -> A -> bool) (l1 l2 : list A) : bool :=
   match l1, l2 with
@@ -108,6 +114,22 @@ Inductive result (A : Type) : Type :=
 
 Arguments Ok {A} _.
 Arguments Err {A} _.
+
+#[global]
+Instance Monad_result : Monad result :=
+{ ret :=
+    fun {A : Type} (x : A) =>
+      Ok x;
+
+  bind :=
+    fun {A B : Type}
+        (r : result A)
+        (f : A -> result B) =>
+      match r with
+      | Ok x  => f x
+      | Err e => Err e
+      end
+}.
 
 Notation V_Unit := (V_Prod []).
 Notation E_Unit := (E_Prod []).
@@ -219,6 +241,43 @@ Definition initial_state : machine_state :=
      ms_last_type := T_Unit;
      ms_last_value := V_Unit |}.
 
+Fixpoint remove_first_eqb
+    {A : Type}
+    (feq : A -> A -> bool)
+    (x : A)
+    (xs : list A)
+  : option (list A) :=
+  match xs with
+  | [] => None
+  | y :: ys =>
+      if feq x y then
+        Some ys
+      else
+        match remove_first_eqb feq x ys with
+        | None => None
+        | Some ys' => Some (y :: ys')
+        end
+  end.
+
+Fixpoint permutation_eqb
+    {A : Type}
+    (feq : A -> A -> bool)
+    (xs ys : list A)
+  : bool :=
+  match xs with
+  | [] =>
+      match ys with
+      | [] => true
+      | _ => false
+      end
+  | x :: xs' =>
+      match remove_first_eqb feq x ys with
+      | None => false
+      | Some ys' => permutation_eqb feq xs' ys'
+      end
+  end.
+
+
 Fixpoint type_beq (T1 T2 : type) : bool :=
   match T1, T2 with
   | T_Hole X, T_Hole Y => eqb X Y
@@ -229,8 +288,8 @@ Fixpoint type_beq (T1 T2 : type) : bool :=
   | T_Prod Ts1, T_Prod Ts2 => list_eqb type_beq Ts1 Ts2
   | T_Comb X Ts1, T_Comb Y Ts2 =>
       eqb X Y && list_eqb type_beq Ts1 Ts2
-  | T_Map entries1, T_Map entries2 =>
-      list_eqb (pair_eqb type_beq type_beq) entries1 entries2
+  | T_Map lst1, T_Map lst2 =>
+    permutation_eqb (pair_eqb type_beq type_beq) lst1 lst2
   | _, _ => false
   end.
 
@@ -250,11 +309,8 @@ Fixpoint expr_beq (e1 e2 : expr) : bool :=
   | E_Comb ctor1 args1, E_Comb ctor2 args2 => 
       expr_beq ctor1 ctor2
       && list_eqb expr_beq args1 args2
-  | E_Map entries1, E_Map entries2 =>
-      list_eqb
-        (pair_eqb expr_beq expr_beq)
-        entries1
-        entries2
+  | E_Map lst1, E_Map lst2 =>
+      permutation_eqb (pair_eqb expr_beq expr_beq) lst1 lst2
   | E_App a1 b1, E_App a2 b2 =>
       expr_beq a1 a2 && expr_beq b1 b2
   | _, _ =>
@@ -464,8 +520,8 @@ Fixpoint value_beq (v1 v2 : value) : bool :=
   | V_Prod vs1, V_Prod vs2 => list_eqb value_beq vs1 vs2
   | V_Comb ctor1 args1, V_Comb ctor2 args2 =>
       value_beq ctor1 ctor2 && list_eqb value_beq args1 args2
-  | V_Map entries1, V_Map entries2 =>
-      list_eqb (pair_eqb value_beq value_beq) entries1 entries2
+  | V_Map lst1, V_Map lst2 =>
+      permutation_eqb (pair_eqb value_beq value_beq) lst1 lst2
   | _, _ =>
       false
   end.
@@ -1403,8 +1459,6 @@ Definition compile_prog
       end
   end.
 
-
-
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog0 := [
   C_DeclVar "oneprod" (E_Prod [E_Elem "bla"]); 
@@ -1560,6 +1614,307 @@ Example example_good_prog10 := [
   C_CloseCombType "Bool"
 ].
 Compute (compile_prog example_good_prog10).
+
+Example type_beq_map_permutation :
+  type_beq
+    (T_Map
+       [(T_Elem "K1", T_Elem "V1");
+        (T_Elem "K2", T_Elem "V2")])
+    (T_Map
+       [(T_Elem "K2", T_Elem "V2");
+        (T_Elem "K1", T_Elem "V1")])
+  = true.
+Proof.
+  reflexivity.
+Qed.
+
+Example type_beq_map_different_values :
+  type_beq
+    (T_Map
+       [(T_Elem "K1", T_Elem "V1");
+        (T_Elem "K2", T_Elem "V2")])
+    (T_Map
+       [(T_Elem "K2", T_Elem "X");
+        (T_Elem "K1", T_Elem "V1")])
+  = false.
+Proof.
+  reflexivity.
+Qed.
+
+Example type_beq_map_different_lengths :
+  type_beq
+    (T_Map
+       [(T_Elem "K1", T_Elem "V1")])
+    (T_Map
+       [(T_Elem "K1", T_Elem "V1");
+        (T_Elem "K2", T_Elem "V2")])
+  = false.
+Proof.
+  reflexivity.
+Qed.
+
+Example expr_beq_map_permutation :
+  expr_beq
+    (E_Map
+       [(E_Elem "K1", E_Elem "V1");
+        (E_Elem "K2", E_Elem "V2")])
+    (E_Map
+       [(E_Elem "K2", E_Elem "V2");
+        (E_Elem "K1", E_Elem "V1")])
+  = true.
+Proof.
+  reflexivity.
+Qed.
+
+Example expr_beq_map_same_keys_different_values :
+  expr_beq
+    (E_Map
+       [(E_Elem "K1", E_Elem "V1");
+        (E_Elem "K2", E_Elem "V2")])
+    (E_Map
+       [(E_Elem "K2", E_Elem "X");
+        (E_Elem "K1", E_Elem "V1")])
+  = false.
+Proof.
+  reflexivity.
+Qed.
+
+Example expr_beq_map_different_keys :
+  expr_beq
+    (E_Map
+       [(E_Elem "K1", E_Elem "V1");
+        (E_Elem "K2", E_Elem "V2")])
+    (E_Map
+       [(E_Elem "K3", E_Elem "V2");
+        (E_Elem "K1", E_Elem "V1")])
+  = false.
+Proof.
+  reflexivity.
+Qed.
+
+Example expr_beq_map_different_lengths :
+  expr_beq
+    (E_Map
+       [(E_Elem "K1", E_Elem "V1")])
+    (E_Map
+       [(E_Elem "K1", E_Elem "V1");
+        (E_Elem "K2", E_Elem "V2")])
+  = false.
+Proof.
+  reflexivity.
+Qed.
+
+Example expr_beq_map_nested_permutation :
+  expr_beq
+    (E_Map
+       [(E_Elem "outer",
+         E_Map
+           [(E_Elem "K1", E_Elem "V1");
+            (E_Elem "K2", E_Elem "V2")])])
+    (E_Map
+       [(E_Elem "outer",
+         E_Map
+           [(E_Elem "K2", E_Elem "V2");
+            (E_Elem "K1", E_Elem "V1")])])
+  = true.
+Proof.
+  reflexivity.
+Qed.
+
+Example expr_beq_map_entry_permutation_and_nested_permutation :
+  expr_beq
+    (E_Map
+       [(E_Elem "A",
+         E_Map
+           [(E_Elem "K1", E_Elem "V1");
+            (E_Elem "K2", E_Elem "V2")]);
+        (E_Elem "B", E_Elem "VB")])
+    (E_Map
+       [(E_Elem "B", E_Elem "VB");
+        (E_Elem "A",
+         E_Map
+           [(E_Elem "K2", E_Elem "V2");
+            (E_Elem "K1", E_Elem "V1")])])
+  = true.
+Proof.
+  reflexivity.
+Qed.
+
+Example expr_beq_map_duplicate_multiplicity_equal :
+  expr_beq
+    (E_Map
+       [(E_Elem "K", E_Elem "V");
+        (E_Elem "K", E_Elem "V");
+        (E_Elem "X", E_Elem "Y")])
+    (E_Map
+       [(E_Elem "X", E_Elem "Y");
+        (E_Elem "K", E_Elem "V");
+        (E_Elem "K", E_Elem "V")])
+  = true.
+Proof.
+  reflexivity.
+Qed.
+
+Example expr_beq_map_duplicate_multiplicity_different :
+  expr_beq
+    (E_Map
+       [(E_Elem "K", E_Elem "V");
+        (E_Elem "K", E_Elem "V")])
+    (E_Map
+       [(E_Elem "K", E_Elem "V");
+        (E_Elem "X", E_Elem "Y")])
+  = false.
+Proof.
+  reflexivity.
+Qed.
+
+
+Example value_beq_map_permutation :
+  value_beq
+    (V_Map
+       [(V_Elem "K1", V_Elem "V1");
+        (V_Elem "K2", V_Elem "V2")])
+    (V_Map
+       [(V_Elem "K2", V_Elem "V2");
+        (V_Elem "K1", V_Elem "V1")])
+  = true.
+Proof.
+  reflexivity.
+Qed.
+
+Example value_beq_map_same_keys_different_values :
+  value_beq
+    (V_Map
+       [(V_Elem "K1", V_Elem "V1");
+        (V_Elem "K2", V_Elem "V2")])
+    (V_Map
+       [(V_Elem "K2", V_Elem "X");
+        (V_Elem "K1", V_Elem "V1")])
+  = false.
+Proof.
+  reflexivity.
+Qed.
+
+Example value_beq_map_different_keys :
+  value_beq
+    (V_Map
+       [(V_Elem "K1", V_Elem "V1");
+        (V_Elem "K2", V_Elem "V2")])
+    (V_Map
+       [(V_Elem "K3", V_Elem "V2");
+        (V_Elem "K1", V_Elem "V1")])
+  = false.
+Proof.
+  reflexivity.
+Qed.
+
+Example value_beq_map_different_lengths :
+  value_beq
+    (V_Map
+       [(V_Elem "K1", V_Elem "V1")])
+    (V_Map
+       [(V_Elem "K1", V_Elem "V1");
+        (V_Elem "K2", V_Elem "V2")])
+  = false.
+Proof.
+  reflexivity.
+Qed.
+
+Example value_beq_map_nested_permutation :
+  value_beq
+    (V_Map
+       [(V_Elem "outer",
+         V_Map
+           [(V_Elem "K1", V_Elem "V1");
+            (V_Elem "K2", V_Elem "V2")])])
+    (V_Map
+       [(V_Elem "outer",
+         V_Map
+           [(V_Elem "K2", V_Elem "V2");
+            (V_Elem "K1", V_Elem "V1")])])
+  = true.
+Proof.
+  reflexivity.
+Qed.
+
+Example value_beq_map_entry_permutation_and_nested_permutation :
+  value_beq
+    (V_Map
+       [(V_Elem "A",
+         V_Map
+           [(V_Elem "K1", V_Elem "V1");
+            (V_Elem "K2", V_Elem "V2")]);
+        (V_Elem "B", V_Elem "VB")])
+    (V_Map
+       [(V_Elem "B", V_Elem "VB");
+        (V_Elem "A",
+         V_Map
+           [(V_Elem "K2", V_Elem "V2");
+            (V_Elem "K1", V_Elem "V1")])])
+  = true.
+Proof.
+  reflexivity.
+Qed.
+
+Example value_beq_map_duplicate_multiplicity_equal :
+  value_beq
+    (V_Map
+       [(V_Elem "K", V_Elem "V");
+        (V_Elem "K", V_Elem "V");
+        (V_Elem "X", V_Elem "Y")])
+    (V_Map
+       [(V_Elem "X", V_Elem "Y");
+        (V_Elem "K", V_Elem "V");
+        (V_Elem "K", V_Elem "V")])
+  = true.
+Proof.
+  reflexivity.
+Qed.
+
+Example value_beq_map_duplicate_multiplicity_different :
+  value_beq
+    (V_Map
+       [(V_Elem "K", V_Elem "V");
+        (V_Elem "K", V_Elem "V")])
+    (V_Map
+       [(V_Elem "K", V_Elem "V");
+        (V_Elem "X", V_Elem "Y")])
+  = false.
+Proof.
+  reflexivity.
+Qed.
+
+
+Example expr_beq_trep_map_permutation :
+  expr_beq
+    (E_TRep
+       (T_Map
+          [(T_Elem "K1", T_Elem "V1");
+           (T_Elem "K2", T_Elem "V2")]))
+    (E_TRep
+       (T_Map
+          [(T_Elem "K2", T_Elem "V2");
+           (T_Elem "K1", T_Elem "V1")]))
+  = true.
+Proof.
+  reflexivity.
+Qed.
+
+Example value_beq_trep_map_permutation :
+  value_beq
+    (V_TRep
+       (T_Map
+          [(T_Elem "K1", T_Elem "V1");
+           (T_Elem "K2", T_Elem "V2")]))
+    (V_TRep
+       (T_Map
+          [(T_Elem "K2", T_Elem "V2");
+           (T_Elem "K1", T_Elem "V1")]))
+  = true.
+Proof.
+  reflexivity.
+Qed.
+
 
 Example infer_map_duplicate_key_test :
   infer_type_expr
