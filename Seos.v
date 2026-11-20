@@ -29,6 +29,19 @@ Definition prim_beq (p1 p2 : prim) : bool :=
   | _, _ => false
   end.
 
+Notation pair a b := (a, b).
+Notation Pair A B := (A * B)%type.
+
+Definition pair_eqb
+    {A B : Type}
+    (eqA : A -> A -> bool)
+    (eqB : B -> B -> bool)
+    (p1 p2 : A * B)
+  : bool :=
+  match p1, p2 with
+  | (a1, b1), (a2, b2) => eqA a1 a2 && eqB b1 b2
+  end.
+
 Inductive type : Type :=
   | T_Hole : string -> type
   | T_Abbr : TypeName -> type
@@ -36,7 +49,8 @@ Inductive type : Type :=
   | T_Prim : prim -> type
   | T_TRep : type -> type
   | T_Prod : list type -> type
-  | T_Comb : TypeName -> list type -> type.
+  | T_Comb : TypeName -> list type -> type
+  | T_Map : list (Pair type type) -> type.
 
 Inductive expr : Type :=
   | E_Var : VarName -> expr
@@ -45,6 +59,7 @@ Inductive expr : Type :=
   | E_TRep : type -> expr
   | E_Prod : list expr -> expr
   | E_Comb : expr -> list expr -> expr
+  | E_Map : list (Pair expr expr) -> expr
   | E_App : expr -> expr -> expr.
 
 Inductive value : Type :=
@@ -52,7 +67,8 @@ Inductive value : Type :=
   | V_Prim : prim -> value
   | V_TRep : type -> value
   | V_Prod : list value -> value
-  | V_Comb : value -> list value -> value.
+  | V_Comb : value -> list value -> value
+  | V_Map : list (Pair value value) -> value.
 
 Inductive command : Type :=
   | C_DeclVar : VarName -> expr -> command
@@ -70,6 +86,8 @@ Inductive error : Type :=
   | Err_DuplicateVar : VarName -> error
   | Err_DuplicateType : TypeName -> error
   | Err_DuplicateCombSignature : TypeName -> type -> error
+  | ExprErr_DuplicateMapKey : expr -> error
+  | TypeErr_DuplicateMapKey : type -> error
   | Err_UnknownCombSignature : error
   | Err_InvalidType : error
   | Err_CyclicTypeAbbr : TypeName -> error
@@ -130,6 +148,12 @@ Fixpoint contains_prim (T : type) : bool :=
   | T_TRep T1 => contains_prim T1
   | T_Prod Ts => existsb contains_prim Ts
   | T_Comb _ Ts => existsb contains_prim Ts
+  | T_Map entries =>
+      existsb
+        (fun entry =>
+           let '(K, V) := entry in
+           contains_prim K || contains_prim V)
+        entries
   | _ => false
   end.
 
@@ -139,6 +163,12 @@ Fixpoint contains_hole (T : type) : bool :=
   | T_TRep T1 => contains_hole T1
   | T_Prod Ts => existsb contains_hole Ts
   | T_Comb _ Ts => existsb contains_hole Ts
+  | T_Map entries =>
+      existsb
+        (fun entry =>
+           let '(K, V) := entry in
+           contains_hole K || contains_hole V)
+        entries
   | _ => false
   end.
 
@@ -153,6 +183,14 @@ Fixpoint type_size (T : type) : nat :=
       S (fold_right (fun T1 n => type_size T1 + n) 0 Ts)
   | T_Comb _ Ts =>
       S (fold_right (fun T1 n => type_size T1 + n) 0 Ts)
+  | T_Map entries =>
+      S
+        (fold_right
+           (fun entry n =>
+              let '(K, V) := entry in
+              type_size K + type_size V + n)
+           0
+           entries)
   end.
 
 Fixpoint type_context_size (Gamma : type_context) : nat :=
@@ -191,7 +229,36 @@ Fixpoint type_beq (T1 T2 : type) : bool :=
   | T_Prod Ts1, T_Prod Ts2 => list_eqb type_beq Ts1 Ts2
   | T_Comb X Ts1, T_Comb Y Ts2 =>
       eqb X Y && list_eqb type_beq Ts1 Ts2
+  | T_Map entries1, T_Map entries2 =>
+      list_eqb (pair_eqb type_beq type_beq) entries1 entries2
   | _, _ => false
+  end.
+
+Definition type_mem
+    (T : type)
+    (Ts : list type)
+  : bool :=
+  existsb (type_beq T) Ts.
+
+Fixpoint expr_beq (e1 e2 : expr) : bool :=
+  match e1, e2 with
+  | E_Var X, E_Var Y => eqb X Y
+  | E_Elem x, E_Elem y => eqb x y
+  | E_Prim p1, E_Prim p2 => prim_beq p1 p2
+  | E_TRep T1, E_TRep T2 => type_beq T1 T2
+  | E_Prod es1, E_Prod es2 => list_eqb expr_beq es1 es2
+  | E_Comb ctor1 args1, E_Comb ctor2 args2 => 
+      expr_beq ctor1 ctor2
+      && list_eqb expr_beq args1 args2
+  | E_Map entries1, E_Map entries2 =>
+      list_eqb
+        (pair_eqb expr_beq expr_beq)
+        entries1
+        entries2
+  | E_App a1 b1, E_App a2 b2 =>
+      expr_beq a1 a2 && expr_beq b1 b2
+  | _, _ =>
+      false
   end.
 
 Fixpoint type_comb_lookup
@@ -277,6 +344,26 @@ Fixpoint norm_type_fuel
               end
           end
       in
+      let fix norm_map_entries
+          (entries : list (type * type))
+          : result (list (type * type)) :=
+          match entries with
+          | [] => Ok []
+          | (K, V) :: rest =>
+              match norm_type_fuel fuel' visited Gamma K with
+              | Err e => Err e
+              | Ok KN =>
+                  match norm_type_fuel fuel' visited Gamma V with
+                  | Err e => Err e
+                  | Ok VN =>
+                      match norm_map_entries rest with
+                      | Err e => Err e
+                      | Ok restN => Ok ((KN, VN) :: restN)
+                      end
+                  end
+              end
+          end
+      in
       match T with
       | T_Hole X => Ok (T_Hole X)
       | T_Elem e => Ok (T_Elem e)
@@ -306,6 +393,11 @@ Fixpoint norm_type_fuel
           match norm_types Ts with
           | Err e => Err e
           | Ok TsN => Ok (T_Comb X TsN)
+          end
+      | T_Map entries =>
+          match norm_map_entries entries with
+          | Err e => Err e
+          | Ok entriesN => Ok (T_Map entriesN)
           end
       end
   end.
@@ -364,19 +456,18 @@ Definition norm_type_beq
       end
   end.
 
-Definition value_beq
-    (type_eq : type -> type -> result bool)
-    (value_eq : value -> value -> bool)
-    (v1 v2 : value)
-  : result bool :=
+Fixpoint value_beq (v1 v2 : value) : bool :=
   match v1, v2 with
-  | V_Elem e1, V_Elem e2 => Ok (eqb e1 e2)
-  | V_Prim p1, V_Prim p2 => Ok (prim_beq p1 p2)
-  | V_TRep T1, V_TRep T2 => type_eq T1 T2
-  | V_Prod vs1, V_Prod vs2 => Ok (list_eqb value_eq vs1 vs2)
+  | V_Elem e1, V_Elem e2 => eqb e1 e2
+  | V_Prim p1, V_Prim p2 => prim_beq p1 p2
+  | V_TRep T1, V_TRep T2 => type_beq T1 T2
+  | V_Prod vs1, V_Prod vs2 => list_eqb value_beq vs1 vs2
   | V_Comb ctor1 args1, V_Comb ctor2 args2 =>
-      Ok (value_eq ctor1 ctor2 && list_eqb value_eq args1 args2)
-  | _, _ => Ok false
+      value_beq ctor1 ctor2 && list_eqb value_beq args1 args2
+  | V_Map entries1, V_Map entries2 =>
+      list_eqb (pair_eqb value_beq value_beq) entries1 entries2
+  | _, _ =>
+      false
   end.
 
 Definition type_subst : Type := list (string * type).
@@ -410,6 +501,32 @@ Fixpoint unify_type_fuel
                   fuel' ptrns_orig actuals_orig subst1 ptrn_rest actual_rest
           end
       | _, _ => Err (Err_TypeListMismatch ptrns_orig actuals_orig)
+      end
+  in
+    let fix unify_map_entries
+      (fuel' : nat)
+      (subst0 : type_subst)
+      (ptrns actuals : list (type * type))
+      {struct ptrns}
+      : result type_subst :=
+      match ptrns, actuals with
+      | [], [] => Ok subst0
+      | (ptrnK, ptrnV) :: ptrnRest,
+        (actualK, actualV) :: actualRest =>
+          match unify_type_fuel fuel' subst0 ptrnK actualK with
+          | Err e => Err e
+          | Ok subst1 =>
+              match unify_type_fuel fuel' subst1 ptrnV actualV with
+              | Err e => Err e
+              | Ok subst2 =>
+                  unify_map_entries fuel' subst2 ptrnRest actualRest
+              end
+          end
+      | _, _ =>
+          Err
+            (Err_TypeMismatch
+               (T_Map ptrns)
+               (T_Map actuals))
       end
   in
   match fuel with
@@ -475,6 +592,12 @@ Fixpoint unify_type_fuel
                 Err (Err_TypeMismatch ptrn actual)
           | _ => Err (Err_TypeMismatch ptrn actual)
           end
+      | T_Map ptrn_entries =>
+          match actual with
+          | T_Map actual_entries =>
+              unify_map_entries fuel' subst ptrn_entries actual_entries
+          | _ => Err (Err_TypeMismatch ptrn actual)
+          end
       end
   end.
 
@@ -534,14 +657,10 @@ Definition infer_type_app
     (t pt : type)
   : result type :=
   match t, pt with
-  | T_Prod [], T_Prim _ =>
-      Err (TypeErr_InvalidApp t pt)
-  | T_Prod (x :: _), T_Prim Prm_Left =>
-      norm_type Gamma x
-  | T_Prod xs, T_Prim Prm_Right =>
-      norm_type Gamma (last xs T_Unit)
-  | _, _ =>
-      Err (TypeErr_InvalidApp t pt)
+  | T_Prod [], T_Prim _ => Err (TypeErr_InvalidApp t pt)
+  | T_Prod (x :: _), T_Prim Prm_Left => norm_type Gamma x
+  | T_Prod xs, T_Prim Prm_Right => norm_type Gamma (last xs T_Unit)
+  | _, _ => Err (TypeErr_InvalidApp t pt)
   end.
 
 Fixpoint holenames_in_subst_lookup
@@ -559,6 +678,25 @@ Fixpoint holenames_in_subst_lookup
           | Ok Ts => Ok (T :: Ts)
           end
       end
+  end.
+
+Fixpoint expr_key_mem
+    (key : expr)
+    (keys : list expr)
+  : bool :=
+  match keys with
+  | [] => false
+  | key' :: rest => expr_beq key key' || expr_key_mem key rest
+  end.
+  
+Fixpoint value_key_mem
+    (key : value)
+    (keys : list value)
+  : bool :=
+  match keys with
+  | [] =>
+      false
+  | key' :: rest => value_beq key key' || value_key_mem key rest
   end.
 
 Fixpoint infer_type_expr
@@ -598,8 +736,7 @@ Fixpoint infer_type_expr
                     holenames_in_subst_lookup holenames argsubst
                   with
                   | Err e => Err e
-                  | Ok typeargs =>
-                      Ok (tn, ctortype, typeargs)
+                  | Ok typeargs => Ok (tn, ctortype, typeargs)
                   end
               end
           end
@@ -616,9 +753,7 @@ Fixpoint infer_type_expr
           match infer_type_expr Gamma ctor with
           | Err e => Err e
           | Ok ctortype =>
-              match
-                infer_list infer_type_expr Gamma arglst
-              with
+              match infer_list infer_type_expr Gamma arglst with
               | Err e => Err e
               | Ok argtypes =>
                   match prm with
@@ -629,6 +764,45 @@ Fixpoint infer_type_expr
               end
           end
       end
+  in
+  let fix infer_map_entries
+    (seen_key_types : list type)
+    (entries : list (expr * expr))
+    : result (list (type * type)) :=
+    match entries with
+    | [] => Ok []
+    | (key, val) :: rest =>
+        match infer_type_expr Gamma key with
+        | Err e => Err e
+        | Ok key_type =>
+            match norm_type Gamma key_type with
+            | Err e => Err e
+            | Ok normalized_key_type =>
+                if type_mem normalized_key_type seen_key_types
+                then Err (TypeErr_DuplicateMapKey normalized_key_type)
+                else
+                  match infer_type_expr Gamma val with
+                  | Err e => Err e
+                  | Ok value_type =>
+                      match norm_type Gamma value_type with
+                      | Err e => Err e
+                      | Ok normalized_value_type =>
+                          match
+                            infer_map_entries 
+                              (normalized_key_type :: seen_key_types) rest
+                          with
+                          | Err e => Err e
+                          | Ok rest_types =>
+                              Ok
+                                ((normalized_key_type,
+                                  normalized_value_type)
+                                 :: rest_types)
+                          end
+                      end
+                  end
+            end
+        end
+    end
   in
   match tm with
   | E_Var X => Err (Err_UnexpandedVar X)
@@ -667,6 +841,11 @@ Fixpoint infer_type_expr
               end
           in
           Ok (T_Comb tn (map trep_replace typeargs))
+      end
+  | E_Map entries =>
+      match infer_map_entries [] entries with
+      | Err e => Err e
+      | Ok entry_types => Ok (T_Map entry_types)
       end
   | E_App (E_Comb ctor arglst) (E_Prim prm) =>
       infer_comb_prim_app ctor arglst prm
@@ -713,6 +892,38 @@ Fixpoint eval_expr
           | Ok arg_values =>
               Ok (V_Comb ctor_value arg_values)
           end
+      end
+  | E_Map entries =>
+      let fix eval_map_entries
+          (seen_keys : list value)
+          (xs : list (expr * expr))
+          : result (list (value * value)) :=
+          match xs with
+          | [] => Ok []
+          | (key_expr, val_expr) :: rest =>
+              match eval_expr key_expr with
+              | Err e => Err e
+              | Ok key_value =>
+                  if value_key_mem key_value seen_keys then
+                    Err (ExprErr_DuplicateMapKey key_expr)
+                  else
+                    match eval_expr val_expr with
+                    | Err e => Err e
+                    | Ok val_value =>
+                        match eval_map_entries (key_value :: seen_keys) rest with
+                        | Err e => Err e
+                        | Ok rest_values =>
+                            Ok ((key_value, val_value) :: rest_values)
+                        end
+                    end
+              end
+          end
+      in
+      match eval_map_entries [] entries with
+      | Err e =>
+          Err e
+      | Ok values =>
+          Ok (V_Map values)
       end
   | E_App a b =>
       match eval_expr a with
@@ -928,6 +1139,32 @@ Fixpoint unfold_type
       | Err e => Err e
       | Ok Ts' => Ok (T_Comb tn Ts')
       end
+  | T_Map entries =>
+    let fix unfold_entries
+        (xs : list (type * type))
+        : result (list (type * type)) :=
+        match xs with
+        | [] => Ok []
+        | (K, V) :: rest =>
+            match unfold_type Delta K with
+            | Err e => Err e
+            | Ok K' =>
+                match unfold_type Delta V with
+                | Err e => Err e
+                | Ok V' =>
+                    match unfold_entries rest with
+                    | Err e => Err e
+                    | Ok rest' =>
+                        Ok ((K', V') :: rest')
+                    end
+                end
+            end
+        end
+    in
+    match unfold_entries entries with
+    | Err e => Err e
+    | Ok entries' => Ok (T_Map entries')
+    end
   end.
 
 Fixpoint unfold_expr
@@ -995,6 +1232,29 @@ Fixpoint unfold_expr
           | Ok args' => Ok (E_Comb ctor' args')
           end
       end
+  | E_Map entries =>
+    let fix unfold_entries (xs : list (expr * expr)) : result (list (expr * expr)) :=
+        match xs with
+        | [] => Ok []
+        | (key, val) :: rest =>
+            match unfold_expr Sigma Delta key with
+            | Err e => Err e
+            | Ok key' =>
+                match unfold_expr Sigma Delta val with
+                | Err e => Err e
+                | Ok val' =>
+                    match unfold_entries rest with
+                    | Err e => Err e
+                    | Ok rest' => Ok ((key', val') :: rest')
+                    end
+                end
+            end
+        end
+    in
+    match unfold_entries entries with
+    | Err e => Err e
+    | Ok entries' => Ok (E_Map entries')
+    end
   | E_App a b =>
       match unfold_expr Sigma Delta a with
       | Err e => Err e
@@ -1142,6 +1402,8 @@ Definition compile_prog
                prog_val := ms_last_value st |}
       end
   end.
+
+
 
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog0 := [
@@ -1298,6 +1560,74 @@ Example example_good_prog10 := [
   C_CloseCombType "Bool"
 ].
 Compute (compile_prog example_good_prog10).
+
+Example infer_map_duplicate_key_test :
+  infer_type_expr
+    []
+    (E_Map
+       [(E_Elem "a", E_Elem "1");
+        (E_Prod [E_Elem "a"], E_Elem "2")])
+  =
+  Err (TypeErr_DuplicateMapKey (T_Elem "a")).
+Proof.
+  reflexivity.
+Qed.
+
+Example eval_map_duplicate_key_test :
+  eval_expr
+    (E_Map
+       [(E_Elem "a", E_Elem "1");
+        (E_Prod [E_Elem "a"], E_Elem "2")])
+  =
+  Err (ExprErr_DuplicateMapKey (E_Prod [E_Elem "a"])).
+Proof.
+  reflexivity.
+Qed.
+
+Example map_expr : expr :=
+  E_Map
+    [(E_Elem "a", E_Elem "1");
+     (E_Elem "b", E_Prod [E_Elem "x"; E_Elem "y"])].
+
+Example infer_map_expr_test :
+  infer_type_expr [] map_expr =
+  Ok
+    (T_Map
+       [(T_Elem "a", T_Elem "1");
+        (T_Elem "b",
+         T_Prod [T_Elem "x"; T_Elem "y"])]).
+Proof.
+  reflexivity.
+Qed.
+
+Example eval_map_expr_test :
+  eval_expr map_expr =
+  Ok
+    (V_Map
+       [(V_Elem "a", V_Elem "1");
+        (V_Elem "b",
+         V_Prod [V_Elem "x"; V_Elem "y"])]).
+Proof.
+  reflexivity.
+Qed.
+
+
+Definition map_type_context : type_context :=
+  [BindTypeAbbr "A" (T_Prod [T_Elem "a"]);
+   BindTypeAbbr "B" (T_Elem "b")].
+
+Example norm_map_type_test :
+  norm_type
+    map_type_context
+    (T_Map
+       [(T_Abbr "A", T_Abbr "B")])
+  =
+  Ok
+    (T_Map
+       [(T_Elem "a", T_Elem "b")]).
+Proof.
+  reflexivity.
+Qed.
 
 
 Example test_unify_nested_prod :
