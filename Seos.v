@@ -83,7 +83,6 @@ Inductive command : Type :=
 Inductive error : Type :=
   | Err_NotImplemented : error
   | Err_UnboundVar : VarName -> error
-  | Err_UnboundType : TypeName -> error
   | Err_UnboundTypeAbbr : TypeName -> error
   | Err_UnboundHole : string -> error
   | Err_DuplicateVar : VarName -> error
@@ -95,6 +94,8 @@ Inductive error : Type :=
   | Err_HoleInMapPatternKey : type -> error
   | Err_UnknownCombSignature : error
   | Err_InvalidType : error
+  | ExprErr_InvalidProd : expr -> error
+  | TypeErr_InvalidProd : type -> error
   | Err_CyclicTypeAbbr : TypeName -> error
   | Err_TypeMismatch : type -> type -> error
   | Err_UnexpandedVar : VarName -> error
@@ -104,6 +105,7 @@ Inductive error : Type :=
   | Err_TypeListMismatch : list type -> list type -> error
   | Err_UsePrimInDeclComb : type -> error
   | Err_UseHoleInExpr : expr -> error
+  | Err_HoleInCombConstructorType : type -> error
   | TypeErr_InvalidApp : type -> type -> error
   | ExprErr_InvalidApp : expr -> expr -> error.
 
@@ -314,28 +316,6 @@ Fixpoint map_pattern_keys_unique
           rest
   end.
 
-Fixpoint valid_map_pattern_keys
-    (T : type)
-  : bool :=
-  match T with
-  | T_Hole _ => true
-  | T_Abbr _ => true
-  | T_Elem _ => true
-  | T_Prim _ => true
-  | T_TRep T1 => valid_map_pattern_keys T1
-  | T_Prod Ts => forallb valid_map_pattern_keys Ts
-  | T_Comb _ Ts => forallb valid_map_pattern_keys Ts
-  | T_Map entries =>
-      map_pattern_keys_unique [] entries
-      && forallb
-          (fun entry =>
-             let '(key, value) := entry in
-             negb (contains_hole key)
-             && valid_map_pattern_keys key
-             && valid_map_pattern_keys value)
-          entries
-  end.
-
 Fixpoint validate_map_pattern_keys
     (T : type)
   : result unit :=
@@ -382,6 +362,12 @@ Fixpoint validate_map_pattern_keys
   | T_Prod Ts => validate_types Ts
   | T_Comb _ Ts => validate_types Ts
   | T_Map entries => validate_entries [] entries
+  end.
+
+Definition valid_map_pattern_keys (T : type) : bool :=
+  match validate_map_pattern_keys T with
+  | Ok _ => true
+  | Err _ => false
   end.
 
 Fixpoint validate_map_pattern_keys_list
@@ -552,7 +538,7 @@ Fixpoint norm_type_fuel
           match norm_types Ts with
           | Err e => Err e
           | Ok [] => Ok T_Unit
-          | Ok [T1] => Ok T1
+          | Ok [T1] => Err (TypeErr_InvalidProd T1)
           | Ok TsN => Ok (T_Prod TsN)
           end
       | T_Comb X Ts =>
@@ -880,17 +866,6 @@ Definition unify_generic_list
   | Err e => Err e
   end.
 
-Definition infer_type_app
-    (Gamma : type_context)
-    (t pt : type)
-  : result type :=
-  match t, pt with
-  | T_Prod [], T_Prim _ => Err (TypeErr_InvalidApp t pt)
-  | T_Prod (x :: _), T_Prim Prm_Left => norm_type Gamma x
-  | T_Prod xs, T_Prim Prm_Right => norm_type Gamma (last xs T_Unit)
-  | _, _ => Err (TypeErr_InvalidApp t pt)
-  end.
-
 Fixpoint holenames_in_subst_lookup
     (holenames : list string)
     (subst : type_subst)
@@ -906,6 +881,90 @@ Fixpoint holenames_in_subst_lookup
           | Ok Ts => Ok (T :: Ts)
           end
       end
+  end.
+
+Definition infer_comb_type_decl_info
+      (f : type_context -> expr -> result type)
+      (Gamma0 : type_context)
+      (ctor : expr)
+      : result (TypeName * type * list string * list type) :=
+      match f Gamma0 ctor with
+      | Err e => Err e
+      | Ok ctortype =>
+          match type_comb_lookup Gamma0 ctortype with
+          | None => Err Err_UnknownCombSignature
+          | Some (tn, declared_ctor_type, holenames, argsptrn) =>
+              Ok (tn, declared_ctor_type, holenames, argsptrn)
+          end
+      end.
+
+Definition infer_comb_type_info
+      (f : type_context -> expr -> result type)
+      (Gamma0 : type_context)
+      (ctor : expr)
+      (arglst : list expr)
+      : result (TypeName * type * list type) :=
+      match infer_comb_type_decl_info f Gamma0 ctor with
+      | Err e => Err e
+      | Ok (tn, ctortype, holenames, argsptrn) =>
+          match infer_list f Gamma0 arglst with
+          | Err e => Err e
+          | Ok argtypes =>
+              match unify_type_list [] argsptrn argtypes with
+              | Err e => Err e
+              | Ok argsubst =>
+                  match
+                    holenames_in_subst_lookup holenames argsubst
+                  with
+                  | Err e => Err e
+                  | Ok typeargs => Ok (tn, ctortype, typeargs)
+                  end
+              end
+          end
+      end.
+
+Definition infer_comb_prim_app
+      (f : type_context -> expr -> result type)
+      (Gamma : type_context)
+      (ctor : expr)
+      (arglst : list expr)
+      (prm : prim)
+      : result type :=
+      match infer_comb_type_info f Gamma ctor arglst with
+      | Err e => Err e
+      | Ok _ =>
+          match f Gamma ctor with
+          | Err e => Err e
+          | Ok ctortype =>
+              match infer_list f Gamma arglst with
+              | Err e => Err e
+              | Ok argtypes =>
+                  match prm with
+                  | Prm_Left => norm_type Gamma ctortype
+                  | Prm_Right =>
+                      match argtypes with
+                      | [] => Ok T_Unit
+                      | [x] => norm_type Gamma x
+                      | xs => norm_type Gamma (T_Prod xs)
+                      end
+                  end
+              end
+          end
+      end.
+
+Definition infer_type_app
+    (f : type_context -> expr -> result type)
+    (Gamma : type_context)
+    (a b : expr)
+    (aty bty : type)
+  : result type :=
+  match a, aty, b, bty with
+  | E_Comb ctor arglst, _, (E_Prim prm), _ =>
+      infer_comb_prim_app f Gamma ctor arglst prm
+  | _, T_Prod [], _, T_Prim _ => Err (TypeErr_InvalidApp aty bty)
+  | _, T_Prod (x :: _), _, T_Prim Prm_Left => norm_type Gamma x
+  | _, T_Prod xs, _, T_Prim Prm_Right => norm_type Gamma (last xs T_Unit)
+  | _, _, _, _ => Err (TypeErr_InvalidApp aty bty)
   end.
 
 Fixpoint expr_key_mem
@@ -932,67 +991,6 @@ Fixpoint infer_type_expr
     (tm : expr)
     {struct tm}
   : result type :=
-  let infer_comb_type_decl_info
-      (Gamma0 : type_context)
-      (ctor : expr)
-      : result (TypeName * type * list string * list type) :=
-      match infer_type_expr Gamma0 ctor with
-      | Err e => Err e
-      | Ok ctortype =>
-          match type_comb_lookup Gamma0 ctortype with
-          | None => Err Err_UnknownCombSignature
-          | Some (tn, declared_ctor_type, holenames, argsptrn) =>
-              Ok (tn, declared_ctor_type, holenames, argsptrn)
-          end
-      end
-  in
-  let infer_comb_type_info
-      (Gamma0 : type_context)
-      (ctor : expr)
-      (arglst : list expr)
-      : result (TypeName * type * list type) :=
-      match infer_comb_type_decl_info Gamma0 ctor with
-      | Err e => Err e
-      | Ok (tn, ctortype, holenames, argsptrn) =>
-          match infer_list infer_type_expr Gamma0 arglst with
-          | Err e => Err e
-          | Ok argtypes =>
-              match unify_type_list [] argsptrn argtypes with
-              | Err e => Err e
-              | Ok argsubst =>
-                  match
-                    holenames_in_subst_lookup holenames argsubst
-                  with
-                  | Err e => Err e
-                  | Ok typeargs => Ok (tn, ctortype, typeargs)
-                  end
-              end
-          end
-      end
-  in
-  let infer_comb_prim_app
-      (ctor : expr)
-      (arglst : list expr)
-      (prm : prim)
-      : result type :=
-      match infer_comb_type_info Gamma ctor arglst with
-      | Err e => Err e
-      | Ok _ =>
-          match infer_type_expr Gamma ctor with
-          | Err e => Err e
-          | Ok ctortype =>
-              match infer_list infer_type_expr Gamma arglst with
-              | Err e => Err e
-              | Ok argtypes =>
-                  match prm with
-                  | Prm_Left => norm_type Gamma ctortype
-                  | Prm_Right =>
-                      norm_type Gamma (T_Prod argtypes)
-                  end
-              end
-          end
-      end
-  in
   let fix infer_map_entries
     (seen_key_types : list type)
     (entries : list (expr * expr))
@@ -1046,11 +1044,7 @@ Fixpoint infer_type_expr
             Ok TN
       end
   | E_Prod [] => Ok T_Unit
-  | E_Prod [x] =>
-      match infer_type_expr Gamma x with
-      | Err e => Err e
-      | Ok T => norm_type Gamma T
-      end
+  | E_Prod [x] => Err (ExprErr_InvalidProd tm) 
   | E_Prod (x :: xs) =>
       match
         infer_list infer_type_expr Gamma (x :: xs)
@@ -1059,7 +1053,7 @@ Fixpoint infer_type_expr
       | Ok Ts => norm_type Gamma (T_Prod Ts)
       end
   | E_Comb ctor arglst =>
-      match infer_comb_type_info Gamma ctor arglst with
+      match infer_comb_type_info infer_type_expr Gamma ctor arglst with
       | Err e => Err e
       | Ok (tn, _, typeargs) =>
           let trep_replace (T : type) : type :=
@@ -1075,16 +1069,14 @@ Fixpoint infer_type_expr
       | Err e => Err e
       | Ok entry_types => Ok (T_Map entry_types)
       end
-  | E_App (E_Comb ctor arglst) (E_Prim prm) =>
-      infer_comb_prim_app ctor arglst prm
   | E_App a b =>
       match infer_type_expr Gamma a with
       | Err e => Err e
       | Ok ta =>
           match infer_type_expr Gamma b with
           | Err e => Err e
-          | Ok tb => infer_type_app Gamma ta tb
-          end
+          | Ok tb =>  infer_type_app infer_type_expr Gamma a b ta tb
+          end 
       end
   end.
 
@@ -1104,7 +1096,7 @@ Fixpoint eval_expr
   | E_Prod es =>
       match es with
       | [] => Ok V_Unit
-      | [e] => eval_expr e
+      | [e] => Err (ExprErr_InvalidProd tm)
       | _ =>
           match eval_expr_list eval_expr es with
           | Err e => Err e
@@ -1211,16 +1203,19 @@ Definition exec_command
         match norm_type Gamma ctortype with
         | Err e => Err e
         | Ok nrmctortype =>
-            match validate_map_pattern_keys nrmctortype with
-            | Err e => Err e
-            | Ok _ =>
-                match type_comb_lookup Gamma nrmctortype with
-                | Some (oldtn, _, _, _) =>
-                    Err (Err_DuplicateCombSignature oldtn nrmctortype)
-                | None =>
-                    if contains_prim nrmctortype then
-                      Err (Err_UsePrimInDeclComb nrmctortype)
-                    else
+            if contains_hole nrmctortype then
+              Err (Err_HoleInCombConstructorType nrmctortype)
+            else
+            if contains_prim nrmctortype then
+              Err (Err_UsePrimInDeclComb nrmctortype)
+            else
+              match validate_map_pattern_keys nrmctortype with
+              | Err e => Err e
+              | Ok _ =>
+                  match type_comb_lookup Gamma nrmctortype with
+                  | Some (oldtn, _, _, _) =>
+                      Err (Err_DuplicateCombSignature oldtn nrmctortype)
+                  | None =>
                       match norm_comb_list Gamma args with
                       | Err e => Err e
                       | Ok nrmargs =>
@@ -1235,8 +1230,8 @@ Definition exec_command
                                    ms_last_value := ms_last_value st |}
                           end
                       end
-                end
-            end
+                  end
+              end
         end
   | C_Eval e =>
       match infer_type_expr Gamma e with
@@ -1599,7 +1594,7 @@ Record Prg_Result : Type := {
   prog_val : value
 }.
 
-Fixpoint compile_prog_aux
+Fixpoint run_prog_aux
     (st : machine_state)
     (prg : prog)
     {struct prg}
@@ -1609,18 +1604,18 @@ Fixpoint compile_prog_aux
   | cmd :: rest =>
       match exec_command st cmd with
       | Err e => Err e
-      | Ok st' => compile_prog_aux st' rest
+      | Ok st' => run_prog_aux st' rest
       end
   end.
 
-Definition compile_prog
+Definition run_prog
     (input_program : prog)
   : result Prg_Result :=
   match unfold_prog input_program with
   | Err e => Err e
   | Ok unfolded_program =>
       match
-        compile_prog_aux initial_state unfolded_program
+        run_prog_aux initial_state unfolded_program
       with
       | Err e => Err e
       | Ok st =>
@@ -1632,10 +1627,10 @@ Definition compile_prog
 
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog0 := [
-  C_DeclVar "oneprod" (E_Prod [E_Elem "bla"]); 
-  C_DeclVar "myvar" (E_Prod [E_TRep (T_Prod [T_Elem "one"]); E_Elem "0"; E_Elem "2"; E_Var "oneprod"]);
+  C_DeclVar "minprod" (E_Prod [E_Elem "bla"; E_Unit]); 
+  C_DeclVar "myvar" (E_Prod [E_TRep (T_Elem "one"); E_Elem "0"; E_Elem "2"; E_Var "minprod"]);
   C_Eval (E_Prod [E_App (E_Var "myvar") (E_Prim Prm_Left); E_App (E_Var "myvar") (E_Prim Prm_Right)]) ].
-Compute (compile_prog example_good_prog0).
+Compute (run_prog example_good_prog0).
 
 (* Хорошая программа -  объявление типов-комбинаций *)
 Example example_good_prog2 := [
@@ -1644,7 +1639,7 @@ Example example_good_prog2 := [
   C_CloseCombType "Bool";
   C_Eval (E_Comb (E_Elem "true") [])
 ].
-Compute (compile_prog example_good_prog2).
+Compute (run_prog example_good_prog2).
 
 (* Хорошая программа -  объявление индуктивного типа натуральных чисел *)
 Example example_good_prog3 := [
@@ -1657,7 +1652,7 @@ Example example_good_prog3 := [
   C_DeclVar "zero" (E_Comb (E_Elem "Zero") []);
   C_Eval (E_Comb (E_Elem "Some") [E_Comb (E_Elem "Succ") [E_Var "zero"]])
 ].
-Compute (compile_prog example_good_prog3).
+Compute (run_prog example_good_prog3).
 
 (* Хорошая программа - типы комбинаций с параметрами произвольных типов *)
 Example example_good_prog4 := [
@@ -1665,7 +1660,7 @@ Example example_good_prog4 := [
   C_CloseCombType "Foo";
   C_Eval (E_Comb (E_Elem "Foo") [E_Unit; (E_Prim Prm_Left)])
 ].
-Compute (compile_prog example_good_prog4).
+Compute (run_prog example_good_prog4).
 
 (* Хорошая программа - типы комбинаций с параметрами одинаковых типов *)
 Example example_good_prog5 := [
@@ -1673,7 +1668,7 @@ Example example_good_prog5 := [
   C_CloseCombType "Foo";
   C_Eval (E_Comb (E_Elem "Foo") [E_Unit; E_Unit])
 ].
-Compute (compile_prog example_good_prog5).
+Compute (run_prog example_good_prog5).
 
 (* Хорошая программа -  применение E_Prim к комбинации *)
 Example example_good_prog6 := [
@@ -1687,7 +1682,7 @@ Example example_good_prog6 := [
   C_DeclVar "comb" (E_Comb (E_Elem "Some") [E_Comb (E_Elem "Succ") [E_Var "zero"]]);
   C_Eval (E_App (E_Var "comb") (E_Prim Prm_Right))
 ].
-Compute (compile_prog example_good_prog6).
+Compute (run_prog example_good_prog6).
 
 (* Хорошая программа - Тип списков *)
 Example example_good_prog7 := [
@@ -1703,7 +1698,7 @@ Example example_good_prog7 := [
       (E_Comb (E_Elem "Nil") [E_TRep (T_Comb "Nat" [])])
   ])
 ].
-Compute (compile_prog example_good_prog7).
+Compute (run_prog example_good_prog7).
 
 (* Плохая программа - несоблюдение ограничений типов *)
 Example example_bad_prog0 := [
@@ -1711,35 +1706,35 @@ Example example_bad_prog0 := [
   C_CloseCombType "Foo";
   C_Eval (E_Comb (E_Elem "Foo") [E_Unit; E_Elem "bla"])
 ].
-Compute (compile_prog example_bad_prog0).
+Compute (run_prog example_bad_prog0).
 
 (* Плохая программа - undefined variable bad *)
 Example example_bad_prog1 := [
   C_DeclVar "bed" (E_Elem "()"); 
   C_Eval (E_Var "bad")].
-Compute (compile_prog example_bad_prog1).
+Compute (run_prog example_bad_prog1).
 
 (* Плохая программа - затенение переменных *)
 Example example_bad_prog2 := [
   C_DeclVar "input" (E_Elem "bla");
   C_DeclVar "input" (E_Prod [E_Elem "0"; E_Elem "2"; E_Elem "VAL"])
 ].
-Compute (compile_prog example_bad_prog2).
+Compute (run_prog example_bad_prog2).
 
 (* Плохая программа - объявление типов и их синонимов с занятыми именами *)
 Example example_bad_prog3 : prog := [
-  C_NewTypeAbbr "NatZero" (T_Prod [T_Elem "Nat"]);
+  C_NewTypeAbbr "NatZero" (T_Elem "Nat");
   C_DeclCombVariant "NatZero" (T_Prod [T_Elem "Zero"; (T_Prod [T_Elem "Nat"])]) [] []
 ].
-Compute (compile_prog example_bad_prog3).
+Compute (run_prog example_bad_prog3).
 
 (* Плохая программа - объявление типов комбинаций с одинаковым конструктором данных *)
 Example example_bad_prog4 : prog := [
-  C_NewTypeAbbr "TP" (T_Prod [T_Elem "Nat"]);
+  C_NewTypeAbbr "TP" (T_Prod [T_Elem "Zero"; T_Elem "Nat"]);
   C_DeclCombVariant "NatZero" (T_Prod [T_Elem "Zero"; T_Elem "Nat"]) [] [];
-  C_DeclCombVariant "NatZeroCopy" (T_Prod [T_Elem "Zero"; T_Prod [T_Abbr "TP"]]) [] []
+  C_DeclCombVariant "NatZeroCopy" (T_Abbr "TP") [] []
 ].
-Compute (compile_prog example_bad_prog4).
+Compute (run_prog example_bad_prog4).
 
 (* Плохая программа - попытка расширить закрытый тип *)
 Example example_bad_prog5 : prog := [
@@ -1749,33 +1744,33 @@ Example example_bad_prog5 : prog := [
   C_DeclCombVariant "Bool" (T_Elem "undef") [] [];
   C_Eval (E_Comb (E_Elem "false") [])
 ].
-Compute (compile_prog example_bad_prog5).
+Compute (run_prog example_bad_prog5).
 
 (* Плохая программа - попытка использовать T_Prim в конструкторе данных для типа комбинации 
    в объявлении типа комбинации *)
 Example example_bad_prog6 : prog := [
   C_DeclCombVariant "Bar" (T_Prod [T_Elem "a"; T_Prim Prm_Left]) [] []
 ].
-Compute (compile_prog example_bad_prog6).
+Compute (run_prog example_bad_prog6).
 
 (* Плохая программа - попытка использовать T_Prim в параметрах типа комбинации 
    в объявлении типа комбинации *)
 Example example_bad_prog7 : prog := [
   C_DeclCombVariant "Bar" (T_Elem "a") [] [T_Prod [T_Prim Prm_Left; T_Elem "x"]]
 ].
-Compute (compile_prog example_bad_prog7).
+Compute (run_prog example_bad_prog7).
 
 (* Плохая программа - ошибочное применение Prm_Left *)
 Example example_good_prog8 := [
   C_DeclVar "myvar" (E_Prod []);
   C_Eval (E_App (E_Var "myvar") (E_Prim Prm_Left))].
-Compute (compile_prog example_good_prog8).
+Compute (run_prog example_good_prog8).
 
 (* Плохая программа - закрытие несуществующего типа *)
 Example example_good_prog9 := [
   C_CloseCombType "Bool"
 ].
-Compute (compile_prog example_good_prog9).
+Compute (run_prog example_good_prog9).
 
 (* Плохая программа - повторное закрытие типа *)
 Example example_good_prog10 := [
@@ -1784,7 +1779,7 @@ Example example_good_prog10 := [
   C_CloseCombType "Bool";
   C_CloseCombType "Bool"
 ].
-Compute (compile_prog example_good_prog10).
+Compute (run_prog example_good_prog10).
 
 Example unify_map_empty :
   unify_type []
@@ -2305,7 +2300,7 @@ Example infer_map_duplicate_key_test :
     []
     (E_Map
        [(E_Elem "a", E_Elem "1");
-        (E_Prod [E_Elem "a"], E_Elem "2")])
+        (E_Elem "a", E_Elem "2")])
   =
   Err (TypeErr_DuplicateMapKey (T_Elem "a")).
 Proof.
@@ -2316,9 +2311,9 @@ Example eval_map_duplicate_key_test :
   eval_expr
     (E_Map
        [(E_Elem "a", E_Elem "1");
-        (E_Prod [E_Elem "a"], E_Elem "2")])
+        (E_Elem "a", E_Elem "2")])
   =
-  Err (ExprErr_DuplicateMapKey (E_Prod [E_Elem "a"])).
+  Err (ExprErr_DuplicateMapKey (E_Elem "a")).
 Proof.
   reflexivity.
 Qed.
@@ -2352,7 +2347,7 @@ Qed.
 
 
 Definition map_type_context : type_context :=
-  [BindTypeAbbr "A" (T_Prod [T_Elem "a"]);
+  [BindTypeAbbr "A" (T_Elem "a");
    BindTypeAbbr "B" (T_Elem "b")].
 
 Example norm_map_type_test :
@@ -2447,19 +2442,21 @@ Example test_unify_product_length_error :
     [
       T_Prod [
         T_Hole "a";
-        T_Hole "b"
+        T_Hole "b";
+        T_Hole "c"
       ]
     ]
     [
       T_Prod [
-        T_Elem "Nat"
+        T_Elem "Nat";
+        T_Elem "Nat2"
       ]
     ]
   =
   Err
     (Err_TypeListMismatch
-       [T_Hole "a"; T_Hole "b"]
-       [T_Elem "Nat"]).
+       [T_Hole "a"; T_Hole "b"; T_Hole "c"]
+       [T_Elem "Nat"; T_Elem "Nat2"]).
 Proof.
   reflexivity.
 Qed.
