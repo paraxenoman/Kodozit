@@ -35,9 +35,6 @@ Definition prim_beq (p1 p2 : prim) : bool :=
   | _, _ => false
   end.
 
-Notation pair a b := (a, b).
-Notation Pair A B := (A * B)%type.
-
 Definition pair_eqb
     {A B : Type}
     (eqA : A -> A -> bool)
@@ -56,7 +53,7 @@ Inductive type : Type :=
   | T_TRep : type -> type
   | T_Prod : list type -> type
   | T_Comb : TypeName -> list type -> type
-  | T_Map : list (Pair type type) -> type.
+  | T_Map : list (type * type) -> type.
 
 Inductive expr : Type :=
   | E_Var : VarName -> expr
@@ -65,7 +62,7 @@ Inductive expr : Type :=
   | E_TRep : type -> expr
   | E_Prod : list expr -> expr
   | E_Comb : expr -> list expr -> expr
-  | E_Map : list (Pair expr expr) -> expr
+  | E_Map : list (expr * expr) -> expr
   | E_App : expr -> expr -> expr.
 
 Inductive value : Type :=
@@ -74,7 +71,7 @@ Inductive value : Type :=
   | V_TRep : type -> value
   | V_Prod : list value -> value
   | V_Comb : value -> list value -> value
-  | V_Map : list (Pair value value) -> value.
+  | V_Map : list (value * value) -> value.
 
 Inductive command : Type :=
   | C_DeclVar : VarName -> expr -> command
@@ -94,6 +91,8 @@ Inductive error : Type :=
   | Err_DuplicateCombSignature : TypeName -> type -> error
   | ExprErr_DuplicateMapKey : expr -> error
   | TypeErr_DuplicateMapKey : type -> error
+  | Err_DuplicateMapPatternKey : type -> error
+  | Err_HoleInMapPatternKey : type -> error
   | Err_UnknownCombSignature : error
   | Err_InvalidType : error
   | Err_CyclicTypeAbbr : TypeName -> error
@@ -298,6 +297,117 @@ Definition type_mem
     (Ts : list type)
   : bool :=
   existsb (type_beq T) Ts.
+
+Fixpoint map_pattern_keys_unique
+    (seen_keys : list type)
+    (entries : list (type * type))
+  : bool :=
+  match entries with
+  | [] =>
+      true
+  | (key, _) :: rest =>
+      if type_mem key seen_keys then
+        false
+      else
+        map_pattern_keys_unique
+          (key :: seen_keys)
+          rest
+  end.
+
+Fixpoint valid_map_pattern_keys
+    (T : type)
+  : bool :=
+  match T with
+  | T_Hole _ => true
+  | T_Abbr _ => true
+  | T_Elem _ => true
+  | T_Prim _ => true
+  | T_TRep T1 => valid_map_pattern_keys T1
+  | T_Prod Ts => forallb valid_map_pattern_keys Ts
+  | T_Comb _ Ts => forallb valid_map_pattern_keys Ts
+  | T_Map entries =>
+      map_pattern_keys_unique [] entries
+      && forallb
+          (fun entry =>
+             let '(key, value) := entry in
+             negb (contains_hole key)
+             && valid_map_pattern_keys key
+             && valid_map_pattern_keys value)
+          entries
+  end.
+
+Fixpoint validate_map_pattern_keys
+    (T : type)
+  : result unit :=
+  let fix validate_types
+      (Ts : list type)
+      : result unit :=
+      match Ts with
+      | [] => Ok tt
+      | T1 :: rest =>
+          match validate_map_pattern_keys T1 with
+          | Err e => Err e
+          | Ok _ => validate_types rest
+          end
+      end
+  in
+  let fix validate_entries
+      (seen_keys : list type)
+      (entries : list (type * type))
+      : result unit :=
+      match entries with
+      | [] => Ok tt
+      | (key, value) :: rest =>
+          if contains_hole key then
+            Err (Err_HoleInMapPatternKey key)
+          else if type_mem key seen_keys then
+            Err (Err_DuplicateMapPatternKey key)
+          else
+            match validate_map_pattern_keys key with
+            | Err e => Err e
+            | Ok _ =>
+                match validate_map_pattern_keys value with
+                | Err e => Err e
+                | Ok _ => validate_entries (key :: seen_keys) rest
+                end
+            end
+      end
+  in
+  match T with
+  | T_Hole _ => Ok tt
+  | T_Abbr _ => Ok tt
+  | T_Elem _ => Ok tt
+  | T_Prim _ => Ok tt
+  | T_TRep T1 => validate_map_pattern_keys T1
+  | T_Prod Ts => validate_types Ts
+  | T_Comb _ Ts => validate_types Ts
+  | T_Map entries => validate_entries [] entries
+  end.
+
+Fixpoint validate_map_pattern_keys_list
+    (Ts : list type)
+  : result unit :=
+  match Ts with
+  | [] => Ok tt
+  | T :: rest =>
+      match validate_map_pattern_keys T with
+      | Err e => Err e
+      | Ok _ => validate_map_pattern_keys_list rest
+      end
+  end.
+
+Fixpoint find_duplicate_map_pattern_key
+    (seen_keys : list type)
+    (entries : list (type * type))
+  : option type :=
+  match entries with
+  | [] => None
+  | (key, _) :: rest =>
+      if type_mem key seen_keys then
+        Some key
+      else
+        find_duplicate_map_pattern_key (key :: seen_keys) rest
+  end.
 
 Fixpoint expr_beq (e1 e2 : expr) : bool :=
   match e1, e2 with
@@ -559,30 +669,79 @@ Fixpoint unify_type_fuel
       | _, _ => Err (Err_TypeListMismatch ptrns_orig actuals_orig)
       end
   in
-    let fix unify_map_entries
+  let fix find_and_remove_map_entry
+      (ptrn_key : type)
+      (actual_entries : list (type * type))
+      {struct actual_entries}
+      : option (type * list (type * type)) :=
+      match actual_entries with
+      | [] =>
+          None
+      | (actual_key, actual_value) :: actual_rest =>
+          if type_beq ptrn_key actual_key then
+            Some (actual_value, actual_rest)
+          else
+            match
+              find_and_remove_map_entry
+                ptrn_key
+                actual_rest
+            with
+            | None =>
+                None
+            | Some (found_value, remaining_entries) =>
+                Some
+                  (found_value,
+                   (actual_key, actual_value)
+                     :: remaining_entries)
+            end
+      end
+  in
+  let fix unify_map_entries
       (fuel' : nat)
+      (ptrn_map_orig actual_map_orig :
+         list (type * type))
       (subst0 : type_subst)
-      (ptrns actuals : list (type * type))
-      {struct ptrns}
+      (ptrn_entries actual_entries :
+         list (type * type))
+      {struct ptrn_entries}
       : result type_subst :=
-      match ptrns, actuals with
-      | [], [] => Ok subst0
-      | (ptrnK, ptrnV) :: ptrnRest,
-        (actualK, actualV) :: actualRest =>
-          match unify_type_fuel fuel' subst0 ptrnK actualK with
-          | Err e => Err e
-          | Ok subst1 =>
-              match unify_type_fuel fuel' subst1 ptrnV actualV with
-              | Err e => Err e
-              | Ok subst2 =>
-                  unify_map_entries fuel' subst2 ptrnRest actualRest
-              end
-          end
-      | _, _ =>
-          Err
-            (Err_TypeMismatch
-               (T_Map ptrns)
-               (T_Map actuals))
+      match ptrn_entries with
+      | [] =>
+          Ok subst0
+      | (ptrn_key, ptrn_value) :: ptrn_rest =>
+          if contains_hole ptrn_key then
+            Err (Err_HoleInMapPatternKey ptrn_key)
+          else
+            match
+              find_and_remove_map_entry
+                ptrn_key
+                actual_entries
+            with
+            | None =>
+                Err
+                  (Err_TypeMismatch
+                     (T_Map ptrn_map_orig)
+                     (T_Map actual_map_orig))
+            | Some (actual_value, actual_rest) =>
+                match
+                  unify_type_fuel
+                    fuel'
+                    subst0
+                    ptrn_value
+                    actual_value
+                with
+                | Err e =>
+                    Err e
+                | Ok subst1 =>
+                    unify_map_entries
+                      fuel'
+                      ptrn_map_orig
+                      actual_map_orig
+                      subst1
+                      ptrn_rest
+                      actual_rest
+                end
+            end
       end
   in
   match fuel with
@@ -649,11 +808,24 @@ Fixpoint unify_type_fuel
           | _ => Err (Err_TypeMismatch ptrn actual)
           end
       | T_Map ptrn_entries =>
-          match actual with
-          | T_Map actual_entries =>
-              unify_map_entries fuel' subst ptrn_entries actual_entries
-          | _ => Err (Err_TypeMismatch ptrn actual)
-          end
+            match actual with
+            | T_Map actual_entries =>
+                match find_duplicate_map_pattern_key [] ptrn_entries with
+                | Some duplicate_key =>
+                    Err
+                      (Err_DuplicateMapPatternKey
+                         duplicate_key)
+                | None =>
+                    unify_map_entries
+                      fuel'
+                      ptrn_entries
+                      actual_entries
+                      subst
+                      ptrn_entries
+                      actual_entries
+                end
+            | _ => Err (Err_TypeMismatch ptrn actual)
+            end
       end
   end.
 
@@ -1039,32 +1211,31 @@ Definition exec_command
         match norm_type Gamma ctortype with
         | Err e => Err e
         | Ok nrmctortype =>
-            match type_comb_lookup Gamma nrmctortype with
-            | Some (oldtn, _, _, _) =>
-                Err
-                  (Err_DuplicateCombSignature
-                     oldtn
-                     nrmctortype)
-            | None =>
-                if contains_prim nrmctortype then
-                  Err
-                    (Err_UsePrimInDeclComb
-                       nrmctortype)
-                else
-                  match norm_comb_list Gamma args with
-                  | Err e => Err e
-                  | Ok nrmargs =>
-                      Ok
-                        {| ms_type_ctx :=
-                             BindCombType
-                               tn
-                               nrmctortype
-                               holenames
-                               nrmargs
-                             :: Gamma;
-                           ms_last_type := ms_last_type st;
-                           ms_last_value := ms_last_value st |}
-                  end
+            match validate_map_pattern_keys nrmctortype with
+            | Err e => Err e
+            | Ok _ =>
+                match type_comb_lookup Gamma nrmctortype with
+                | Some (oldtn, _, _, _) =>
+                    Err (Err_DuplicateCombSignature oldtn nrmctortype)
+                | None =>
+                    if contains_prim nrmctortype then
+                      Err (Err_UsePrimInDeclComb nrmctortype)
+                    else
+                      match norm_comb_list Gamma args with
+                      | Err e => Err e
+                      | Ok nrmargs =>
+                          match validate_map_pattern_keys_list nrmargs with
+                          | Err e => Err e
+                          | Ok _ =>
+                              Ok
+                                {| ms_type_ctx :=
+                                     BindCombType tn nrmctortype holenames nrmargs 
+                                     :: Gamma;
+                                   ms_last_type := ms_last_type st;
+                                   ms_last_value := ms_last_value st |}
+                          end
+                      end
+                end
             end
         end
   | C_Eval e =>
@@ -1614,6 +1785,219 @@ Example example_good_prog10 := [
   C_CloseCombType "Bool"
 ].
 Compute (compile_prog example_good_prog10).
+
+Example unify_map_empty :
+  unify_type []
+    (T_Map [])
+    (T_Map []) =
+  Ok [].
+Proof.
+  reflexivity.
+Qed.
+
+Example unify_empty_map_pattern :
+  unify_type []
+    (T_Map [])
+    (T_Map
+       [(T_Elem "key1", T_Elem "value1");
+        (T_Elem "key2", T_Elem "value2")]) =
+  Ok [].
+Proof.
+  reflexivity.
+Qed.
+
+Example valid_map_pattern_ok :
+  validate_map_pattern_keys
+    (T_Map
+       [(T_Elem "key1", T_Hole "V1");
+        (T_Elem "key2", T_Hole "V2")]) =
+  Ok tt.
+Proof.
+  reflexivity.
+Qed.
+
+Example invalid_duplicate_map_pattern_key :
+  validate_map_pattern_keys
+    (T_Map
+       [(T_Elem "key", T_Hole "V1");
+        (T_Elem "key", T_Hole "V2")]) =
+  Err
+    (Err_DuplicateMapPatternKey
+       (T_Elem "key")).
+Proof.
+  reflexivity.
+Qed.
+
+Example invalid_hole_in_map_pattern_key :
+  validate_map_pattern_keys
+    (T_Map
+       [(T_Hole "K", T_Hole "V")]) =
+  Err
+    (Err_HoleInMapPatternKey
+       (T_Hole "K")).
+Proof.
+  reflexivity.
+Qed.
+
+Example invalid_nested_duplicate_map_pattern_key :
+  validate_map_pattern_keys
+    (T_Map
+       [(T_Elem "outer",
+         T_Map
+           [(T_Elem "inner", T_Hole "V1");
+            (T_Elem "inner", T_Hole "V2")])]) =
+  Err
+    (Err_DuplicateMapPatternKey
+       (T_Elem "inner")).
+Proof.
+  reflexivity.
+Qed.
+
+Example duplicate_after_norm_context : type_context :=
+  [BindTypeAbbr "AliasKey" (T_Elem "key")].
+
+Example duplicate_map_key_after_normalization :
+  match
+    norm_type
+      duplicate_after_norm_context
+      (T_Map
+         [(T_Abbr "AliasKey", T_Hole "V1");
+          (T_Elem "key", T_Hole "V2")])
+  with
+  | Err e =>
+      Err e
+  | Ok T =>
+      validate_map_pattern_keys T
+  end =
+  Err
+    (Err_DuplicateMapPatternKey
+       (T_Elem "key")).
+Proof.
+  reflexivity.
+Qed.
+
+Example unify_map_rejects_hole_in_key :
+  unify_type []
+    (T_Map
+       [(T_Hole "K", T_Hole "V")])
+    (T_Map
+       [(T_Elem "key", T_Elem "value");
+        (T_Elem "key2", T_Elem "val")]) =
+  Err
+    (Err_HoleInMapPatternKey
+       (T_Hole "K")).
+Proof.
+  reflexivity.
+Qed.
+
+Example unify_map_rejects_nested_hole_in_key :
+  unify_type []
+    (T_Map
+       [(T_Prod
+           [T_Elem "prefix";
+            T_Hole "K"],
+         T_Hole "V")])
+    (T_Map
+       [(T_Prod
+           [T_Elem "prefix";
+            T_Elem "key"],
+         T_Elem "value")]) =
+  Err
+    (Err_HoleInMapPatternKey
+       (T_Prod
+          [T_Elem "prefix";
+           T_Hole "K"])).
+Proof.
+  reflexivity.
+Qed.
+
+
+Example unify_map_permuted :
+  unify_type []
+    (T_Map
+       [(T_Elem "key1", T_Hole "V1");
+        (T_Elem "key2", T_Hole "V2")])
+    (T_Map
+       [(T_Elem "key2", T_Prim Prm_Right);
+        (T_Elem "key3", T_Elem "unused");
+        (T_Elem "key1", T_Prim Prm_Left)]) =
+  Ok
+    [("V2", T_Prim Prm_Right);
+     ("V1", T_Prim Prm_Left)].
+Proof.
+  reflexivity.
+Qed.
+
+Example unify_map_concrete_key :
+  unify_type []
+    (T_Map
+       [(T_Elem "key", T_Hole "V")])
+    (T_Map
+       [(T_Elem "key", T_Elem "value");
+        (T_Elem "key2", T_Elem "val")]) =
+  Ok
+    [("V", T_Elem "value")].
+Proof.
+  reflexivity.
+Qed.
+
+Example unify_map_shared_value_hole :
+  unify_type []
+    (T_Map
+       [(T_Elem "key1", T_Hole "V");
+        (T_Elem "key2", T_Hole "V")])
+    (T_Map
+       [(T_Elem "key2", T_Prim Prm_Left);
+        (T_Elem "key1", T_Prim Prm_Left)]) =
+  Ok
+    [("V", T_Prim Prm_Left)].
+Proof.
+  reflexivity.
+Qed.
+
+Example unify_map_different_lengths :
+  unify_type []
+    (T_Map
+       [(T_Elem "a", T_Hole "X")])
+    (T_Map
+       [(T_Elem "a", T_Prim Prm_Left);
+        (T_Elem "b", T_Prim Prm_Right)]) =
+  Ok [("X", T_Prim Prm_Left)].
+Proof.
+  reflexivity.
+Qed.
+
+Example unify_map_inconsistent_value_hole :
+  unify_type []
+    (T_Map
+       [(T_Elem "key1", T_Hole "V");
+        (T_Elem "key2", T_Hole "V")])
+    (T_Map
+       [(T_Elem "key1", T_Prim Prm_Left);
+        (T_Elem "key2", T_Prim Prm_Right)]) =
+  Err
+    (Err_TypeMismatch
+       (T_Prim Prm_Left)
+       (T_Prim Prm_Right)).
+Proof.
+  reflexivity.
+Qed.
+
+Example unify_map_missing_key :
+  unify_type []
+    (T_Map
+       [(T_Elem "missing", T_Hole "V")])
+    (T_Map
+       [(T_Elem "key", T_Elem "value")]) =
+  Err
+    (Err_TypeMismatch
+       (T_Map
+          [(T_Elem "missing", T_Hole "V")])
+       (T_Map
+          [(T_Elem "key", T_Elem "value")])).
+Proof.
+  reflexivity.
+Qed.
 
 Example type_beq_map_permutation :
   type_beq
