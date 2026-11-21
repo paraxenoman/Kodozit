@@ -90,17 +90,18 @@ Inductive error : Type :=
   | Err_UnexpandedVar : VarName -> error
   (* Ошибки в типах *)
   | TypeErr_UseHole : type -> error
+  | TypeErr_DeclaredHoleNotUsed : string -> error
+  | TypeErr_UndeclaredHole : string -> error
+  | TypeErr_DuplicateHoleName : string -> error
   | TypeErr_InvalidApp : type -> type -> error
   | TypeErr_DuplicateType : TypeName -> error
   | TypeErr_DuplicateCombSignature : TypeName -> type -> error
   | TypeErr_DuplicateMapKey : type -> error
   | TypeErr_DuplicateMapPatternKey : type -> error
   | TypeErr_HoleInMapPatternKey : type -> error
-  | TypeErr_HoleInMapKey : type -> error
   | TypeErr_UnknownCombSignature : error
   | TypeErr_InvalidType : error
   | TypeErr_InvalidProd : type -> error
-  | TypeErr_CyclicAbbr : TypeName -> error
   | TypeErr_Mismatch : type -> type -> error
   | TypeErr_CombClosed : TypeName -> error
   | TypeErr_CloseUnknownComb : TypeName -> error
@@ -231,9 +232,6 @@ Fixpoint type_context_size (Gamma : type_context) : nat :=
       + type_context_size rest
   | CloseCombType _ :: rest => type_context_size rest
   end.
-
-Definition typename_mem (X : TypeName) (xs : list TypeName) : bool :=
-  existsb (fun Y => eqb X Y) xs.
 
 Record machine_state : Type := {
   ms_type_ctx : type_context;
@@ -479,7 +477,6 @@ Definition type_declared (Gamma : type_context) (TN : TypeName) : bool :=
 
 Fixpoint norm_type_fuel
     (fuel : nat)
-    (visited : list TypeName)
     (Gamma : type_context)
     (T : type)
   : result type :=
@@ -490,7 +487,7 @@ Fixpoint norm_type_fuel
           match Ts with
           | [] => Ok []
           | T1 :: rest =>
-              match norm_type_fuel fuel' visited Gamma T1 with
+              match norm_type_fuel fuel' Gamma T1 with
               | Err e => Err e
               | Ok T1N =>
                   match norm_types rest with
@@ -506,10 +503,10 @@ Fixpoint norm_type_fuel
           match entries with
           | [] => Ok []
           | (K, V) :: rest =>
-              match norm_type_fuel fuel' visited Gamma K with
+              match norm_type_fuel fuel' Gamma K with
               | Err e => Err e
               | Ok KN =>
-                  match norm_type_fuel fuel' visited Gamma V with
+                  match norm_type_fuel fuel' Gamma V with
                   | Err e => Err e
                   | Ok VN =>
                       match norm_map_entries rest with
@@ -525,16 +522,12 @@ Fixpoint norm_type_fuel
       | T_Elem e => Ok (T_Elem e)
       | T_Prim p => Ok (T_Prim p)
       | T_Abbr X =>
-          if typename_mem X visited then
-            Err (TypeErr_CyclicAbbr X)
-          else
-            match type_abbr_lookup Gamma X with
-            | None => Err (Err_UnboundTypeAbbr X)
-            | Some T' =>
-                norm_type_fuel fuel' (X :: visited) Gamma T'
-            end
+          match type_abbr_lookup Gamma X with
+          | None => Err (Err_UnboundTypeAbbr X)
+          | Some T' => norm_type_fuel fuel' Gamma T'
+          end
       | T_TRep T1 =>
-          match norm_type_fuel fuel' visited Gamma T1 with
+          match norm_type_fuel fuel' Gamma T1 with
           | Err e => Err e
           | Ok T1N => Ok (T_TRep T1N)
           end
@@ -559,11 +552,7 @@ Fixpoint norm_type_fuel
   end.
 
 Definition norm_type (Gamma : type_context) (T : type) : result type :=
-  norm_type_fuel
-    (S (type_size T + type_context_size Gamma))
-    []
-    Gamma
-    T.
+  norm_type_fuel (S (type_size T + type_context_size Gamma)) Gamma T.
 
 Fixpoint norm_list (Gamma : type_context) (ts : list type) : result (list type) :=
   match ts with
@@ -1181,6 +1170,144 @@ Fixpoint eval_expr
       end
   end.
 
+Fixpoint type_contains_named_hole
+    (X : string)
+    (T : type)
+  : bool :=
+  match T with
+  | T_Hole Y => eqb X Y
+  | T_Abbr _ => false
+  | T_Elem _ => false
+  | T_Prim _ => false
+  | T_TRep T1 =>
+      type_contains_named_hole X T1
+  | T_Prod Ts =>
+      existsb (type_contains_named_hole X) Ts
+  | T_Comb _ Ts =>
+      existsb (type_contains_named_hole X) Ts
+  | T_Map entries =>
+      existsb
+        (fun entry =>
+           let '(K, V) := entry in
+           type_contains_named_hole X K
+           || type_contains_named_hole X V)
+        entries
+  end.
+
+Definition hole_occurs_in_types
+    (X : string)
+    (Ts : list type)
+  : bool :=
+  existsb (type_contains_named_hole X) Ts.
+
+Fixpoint validate_declared_holes_used
+    (holenames : list string)
+    (args : list type)
+  : result unit :=
+  match holenames with
+  | [] =>
+      Ok tt
+  | X :: rest =>
+      if hole_occurs_in_types X args then
+        validate_declared_holes_used rest args
+      else
+        Err (TypeErr_DeclaredHoleNotUsed X)
+  end.
+
+Definition holename_mem
+    (X : string)
+    (holenames : list string)
+  : bool :=
+  existsb (fun Y => eqb X Y) holenames.
+
+Fixpoint validate_type_holes_declared
+    (holenames : list string)
+    (T : type)
+  : result unit :=
+  let fix validate_types (Ts : list type) : result unit :=
+      match Ts with
+      | [] => Ok tt
+      | T1 :: rest =>
+          match
+            validate_type_holes_declared holenames T1 with
+          | Err e => Err e
+          | Ok _ => validate_types rest
+          end
+      end
+  in
+  let fix validate_entries (entries : list (type * type)) : result unit :=
+      match entries with
+      | [] => Ok tt
+      | (K, V) :: rest =>
+          match validate_type_holes_declared holenames K with
+          | Err e => Err e
+          | Ok _ =>
+              match validate_type_holes_declared holenames V with
+              | Err e => Err e
+              | Ok _ => validate_entries rest
+              end
+          end
+      end
+  in
+  match T with
+  | T_Hole X =>
+      if holename_mem X holenames then
+        Ok tt
+      else
+        Err (TypeErr_UndeclaredHole X)
+  | T_Abbr _ => Ok tt
+  | T_Elem _ => Ok tt
+  | T_Prim _ => Ok tt
+  | T_TRep T1 => validate_type_holes_declared holenames T1
+  | T_Prod Ts => validate_types Ts
+  | T_Comb _ Ts => validate_types Ts
+  | T_Map entries => validate_entries entries
+  end.
+
+Fixpoint validate_argument_holes_declared
+    (holenames : list string)
+    (args : list type)
+  : result unit :=
+  match args with
+  | [] => Ok tt
+  | T :: rest =>
+      match validate_type_holes_declared holenames T with
+      | Err e => Err e
+      | Ok _ => validate_argument_holes_declared holenames rest
+      end
+  end.
+
+Fixpoint validate_unique_holenames_aux
+    (seen : list string)
+    (holenames : list string)
+  : result unit :=
+  match holenames with
+  | [] =>
+      Ok tt
+  | X :: rest =>
+      if holename_mem X seen then
+        Err (TypeErr_DuplicateHoleName X)
+      else
+        validate_unique_holenames_aux
+          (X :: seen)
+          rest
+  end.
+
+Definition validate_unique_holenames (holenames : list string)
+  : result unit :=
+  validate_unique_holenames_aux [] holenames.
+
+Definition validate_hole_declaration (holenames : list string) (args : list type)
+  : result unit :=
+  match validate_unique_holenames holenames with
+  | Err e => Err e
+  | Ok _ =>
+      match validate_declared_holes_used holenames args with
+      | Err e => Err e
+      | Ok _ => validate_argument_holes_declared holenames args
+      end
+  end.
+
 Definition exec_command
     (st : machine_state)
     (cmd : command)
@@ -1229,15 +1356,19 @@ Definition exec_command
                       match norm_comb_list Gamma args with
                       | Err e => Err e
                       | Ok nrmargs =>
-                          match validate_map_pattern_keys_list nrmargs with
+                          match validate_hole_declaration holenames nrmargs with
                           | Err e => Err e
                           | Ok _ =>
-                              Ok
-                                {| ms_type_ctx :=
-                                     BindCombType tn nrmctortype holenames nrmargs 
-                                     :: Gamma;
-                                   ms_last_type := ms_last_type st;
-                                   ms_last_value := ms_last_value st |}
+                            match validate_map_pattern_keys_list nrmargs with
+                            | Err e => Err e
+                            | Ok _ =>
+                                Ok
+                                  {| ms_type_ctx :=
+                                       BindCombType tn nrmctortype holenames nrmargs 
+                                       :: Gamma;
+                                     ms_last_type := ms_last_type st;
+                                     ms_last_value := ms_last_value st |}
+                            end
                           end
                       end
                   end
@@ -1513,16 +1644,10 @@ Fixpoint unfold_prog_aux
         match unfold_expr Sigma Delta rhs with
         | Err e => Err e
         | Ok rhs' =>
-            match
-              unfold_prog_aux
-                ((X, rhs') :: Sigma)
-                Delta
-                rest
-            with
-            | Err e => Err e
-            | Ok rest' =>
-                Ok (C_DeclVar X rhs' :: rest')
-            end
+            unfold_prog_aux
+              ((X, rhs') :: Sigma)
+              Delta
+              rest
         end
   | C_NewTypeAbbr X T :: rest =>
       if type_def_declared Delta X then
@@ -1790,6 +1915,59 @@ Example example_good_prog10 := [
   C_CloseCombType "Bool"
 ].
 Compute (run_prog example_good_prog10).
+
+Example norm_type_self_reference_fuel_exhausted :
+  norm_type
+    [BindTypeAbbr "A" (T_Abbr "A")]
+    (T_Abbr "A")
+  =
+  Err TypeErr_InvalidType.
+Proof.
+  reflexivity.
+Qed.
+
+Example norm_type_indirect_cycle_fuel_exhausted :
+  norm_type
+    [BindTypeAbbr "A" (T_Abbr "B");
+     BindTypeAbbr "B" (T_Abbr "A")]
+    (T_Abbr "A")
+  =
+  Err TypeErr_InvalidType.
+Proof.
+  reflexivity.
+Qed.
+
+Example norm_type_large_indirect_cycle_fuel_exhausted :
+  norm_type
+    [BindTypeAbbr "A" (T_Abbr "B");
+     BindTypeAbbr "B" (T_Abbr "C");
+     BindTypeAbbr "C" (T_Abbr "D");
+     BindTypeAbbr "D" (T_Abbr "E");
+     BindTypeAbbr "E" (T_Abbr "A")]
+    (T_Abbr "A")
+  =
+  Err TypeErr_InvalidType.
+Proof.
+  reflexivity.
+Qed.
+
+Example self_abbr_is_unbound :
+  unfold_prog
+    [C_NewTypeAbbr "A" (T_Abbr "A")]
+  =
+    Err (Err_UnboundTypeAbbr "A").
+Proof.
+  reflexivity.
+Qed.
+
+Example forward_abbr_is_unbound :
+  unfold_prog
+    [C_NewTypeAbbr "A" (T_Abbr "B"); C_NewTypeAbbr "B" (T_Abbr "A")]
+  =
+    Err (Err_UnboundTypeAbbr "B").
+Proof.
+  reflexivity.
+Qed.
 
 Example unify_map_empty :
   unify_type []
