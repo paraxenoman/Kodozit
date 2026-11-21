@@ -82,31 +82,35 @@ Inductive command : Type :=
 
 Inductive error : Type :=
   | Err_NotImplemented : error
+  (* Ошибки в именах *)
   | Err_UnboundVar : VarName -> error
   | Err_UnboundTypeAbbr : TypeName -> error
   | Err_UnboundHole : string -> error
   | Err_DuplicateVar : VarName -> error
-  | Err_DuplicateType : TypeName -> error
-  | Err_DuplicateCombSignature : TypeName -> type -> error
-  | ExprErr_DuplicateMapKey : expr -> error
-  | TypeErr_DuplicateMapKey : type -> error
-  | Err_DuplicateMapPatternKey : type -> error
-  | Err_HoleInMapPatternKey : type -> error
-  | Err_UnknownCombSignature : error
-  | Err_InvalidType : error
-  | ExprErr_InvalidProd : expr -> error
-  | TypeErr_InvalidProd : type -> error
-  | Err_CyclicTypeAbbr : TypeName -> error
-  | Err_TypeMismatch : type -> type -> error
   | Err_UnexpandedVar : VarName -> error
-  | Err_CombTypeClosed : TypeName -> error
-  | Err_CloseUnknownCombType : TypeName -> error
-  | Err_CombTypeAlreadyClosed : TypeName -> error
-  | Err_TypeListMismatch : list type -> list type -> error
-  | Err_UsePrimInDeclComb : type -> error
-  | Err_UseHoleInExpr : expr -> error
-  | Err_HoleInCombConstructorType : type -> error
+  (* Ошибки в типах *)
+  | TypeErr_UseHole : type -> error
   | TypeErr_InvalidApp : type -> type -> error
+  | TypeErr_DuplicateType : TypeName -> error
+  | TypeErr_DuplicateCombSignature : TypeName -> type -> error
+  | TypeErr_DuplicateMapKey : type -> error
+  | TypeErr_DuplicateMapPatternKey : type -> error
+  | TypeErr_HoleInMapPatternKey : type -> error
+  | TypeErr_HoleInMapKey : type -> error
+  | TypeErr_UnknownCombSignature : error
+  | TypeErr_InvalidType : error
+  | TypeErr_InvalidProd : type -> error
+  | TypeErr_CyclicAbbr : TypeName -> error
+  | TypeErr_Mismatch : type -> type -> error
+  | TypeErr_CombClosed : TypeName -> error
+  | TypeErr_CloseUnknownComb : TypeName -> error
+  | TypeErr_CombAlreadyClosed : TypeName -> error
+  | TypeErr_ListMismatch : list type -> list type -> error
+  | TypeErr_UsePrimInDeclComb : type -> error
+  (* Ошибки в выражениях *)
+  | ExprErr_DuplicateMapKey : expr -> error
+  | ExprErr_InvalidProd : expr -> error
+  | ExprErr_UseHole : expr -> error
   | ExprErr_InvalidApp : expr -> expr -> error.
 
 Inductive result (A : Type) : Type :=
@@ -339,9 +343,9 @@ Fixpoint validate_map_pattern_keys
       | [] => Ok tt
       | (key, value) :: rest =>
           if contains_hole key then
-            Err (Err_HoleInMapPatternKey key)
+            Err (TypeErr_HoleInMapPatternKey key)
           else if type_mem key seen_keys then
-            Err (Err_DuplicateMapPatternKey key)
+            Err (TypeErr_DuplicateMapPatternKey key)
           else
             match validate_map_pattern_keys key with
             | Err e => Err e
@@ -382,7 +386,7 @@ Fixpoint validate_map_pattern_keys_list
       end
   end.
 
-Fixpoint find_duplicate_map_pattern_key
+Fixpoint find_duplicate_map_key
     (seen_keys : list type)
     (entries : list (type * type))
   : option type :=
@@ -392,7 +396,7 @@ Fixpoint find_duplicate_map_pattern_key
       if type_mem key seen_keys then
         Some key
       else
-        find_duplicate_map_pattern_key (key :: seen_keys) rest
+        find_duplicate_map_key (key :: seen_keys) rest
   end.
 
 Fixpoint expr_beq (e1 e2 : expr) : bool :=
@@ -480,7 +484,7 @@ Fixpoint norm_type_fuel
     (T : type)
   : result type :=
   match fuel with
-  | 0 => Err Err_InvalidType
+  | 0 => Err TypeErr_InvalidType
   | S fuel' =>
       let fix norm_types (Ts : list type) : result (list type) :=
           match Ts with
@@ -522,7 +526,7 @@ Fixpoint norm_type_fuel
       | T_Prim p => Ok (T_Prim p)
       | T_Abbr X =>
           if typename_mem X visited then
-            Err (Err_CyclicTypeAbbr X)
+            Err (TypeErr_CyclicAbbr X)
           else
             match type_abbr_lookup Gamma X with
             | None => Err (Err_UnboundTypeAbbr X)
@@ -586,7 +590,7 @@ Fixpoint norm_comb_list
       | Err e => Err e
       | Ok tN =>
           if contains_prim tN then
-            Err (Err_UsePrimInDeclComb tN)
+            Err (TypeErr_UsePrimInDeclComb tN)
           else
             match norm_comb_list Gamma rest with
             | Err e => Err e
@@ -652,7 +656,7 @@ Fixpoint unify_type_fuel
               unify_list_elements 
                   fuel' ptrns_orig actuals_orig subst1 ptrn_rest actual_rest
           end
-      | _, _ => Err (Err_TypeListMismatch ptrns_orig actuals_orig)
+      | _, _ => Err (TypeErr_ListMismatch ptrns_orig actuals_orig)
       end
   in
   let fix find_and_remove_map_entry
@@ -696,7 +700,7 @@ Fixpoint unify_type_fuel
           Ok subst0
       | (ptrn_key, ptrn_value) :: ptrn_rest =>
           if contains_hole ptrn_key then
-            Err (Err_HoleInMapPatternKey ptrn_key)
+            Err (TypeErr_HoleInMapPatternKey ptrn_key)
           else
             match
               find_and_remove_map_entry
@@ -705,7 +709,7 @@ Fixpoint unify_type_fuel
             with
             | None =>
                 Err
-                  (Err_TypeMismatch
+                  (TypeErr_Mismatch
                      (T_Map ptrn_map_orig)
                      (T_Map actual_map_orig))
             | Some (actual_value, actual_rest) =>
@@ -731,8 +735,11 @@ Fixpoint unify_type_fuel
       end
   in
   match fuel with
-  | 0 => Err Err_InvalidType
+  | 0 => Err TypeErr_InvalidType
   | S fuel' =>
+    if contains_hole actual then
+      Err (TypeErr_UseHole actual)
+    else
       match ptrn with
       | T_Hole X =>
           match type_hole_lookup subst X with
@@ -740,7 +747,7 @@ Fixpoint unify_type_fuel
               if type_beq T actual then
                 Ok subst
               else
-                Err (Err_TypeMismatch T actual)
+                Err (TypeErr_Mismatch T actual)
           | None => Ok ((X, actual) :: subst)
           end
       | T_Abbr X =>
@@ -749,8 +756,8 @@ Fixpoint unify_type_fuel
               if eqb X Y then
                 Ok subst
               else
-                Err (Err_TypeMismatch ptrn actual)
-          | _ => Err (Err_TypeMismatch ptrn actual)
+                Err (TypeErr_Mismatch ptrn actual)
+          | _ => Err (TypeErr_Mismatch ptrn actual)
           end
       | T_Elem e1 =>
           match actual with
@@ -758,8 +765,8 @@ Fixpoint unify_type_fuel
               if eqb e1 e2 then
                 Ok subst
               else
-                Err (Err_TypeMismatch ptrn actual)
-          | _ => Err (Err_TypeMismatch ptrn actual)
+                Err (TypeErr_Mismatch ptrn actual)
+          | _ => Err (TypeErr_Mismatch ptrn actual)
           end
       | T_Prim p1 =>
           match actual with
@@ -767,21 +774,21 @@ Fixpoint unify_type_fuel
               if prim_beq p1 p2 then
                 Ok subst
               else
-                Err (Err_TypeMismatch ptrn actual)
-          | _ => Err (Err_TypeMismatch ptrn actual)
+                Err (TypeErr_Mismatch ptrn actual)
+          | _ => Err (TypeErr_Mismatch ptrn actual)
           end
       | T_TRep ptrn1 =>
           match actual with
           | T_TRep actual1 =>
               unify_type_fuel fuel' subst ptrn1 actual1
-          | _ => Err (Err_TypeMismatch ptrn actual)
+          | _ => Err (TypeErr_Mismatch ptrn actual)
           end
       | T_Prod ptrn_args =>
           match actual with
           | T_Prod actual_args => 
                 unify_list_elements 
                   fuel' ptrn_args actual_args subst ptrn_args actual_args
-          | _ => Err (Err_TypeMismatch ptrn actual)
+          | _ => Err (TypeErr_Mismatch ptrn actual)
           end
       | T_Comb ptrn_name ptrn_args =>
           match actual with
@@ -790,27 +797,30 @@ Fixpoint unify_type_fuel
                 unify_list_elements 
                   fuel' ptrn_args actual_args subst ptrn_args actual_args
               else
-                Err (Err_TypeMismatch ptrn actual)
-          | _ => Err (Err_TypeMismatch ptrn actual)
+                Err (TypeErr_Mismatch ptrn actual)
+          | _ => Err (TypeErr_Mismatch ptrn actual)
           end
       | T_Map ptrn_entries =>
             match actual with
             | T_Map actual_entries =>
-                match find_duplicate_map_pattern_key [] ptrn_entries with
+                match find_duplicate_map_key [] ptrn_entries with
                 | Some duplicate_key =>
-                    Err
-                      (Err_DuplicateMapPatternKey
-                         duplicate_key)
+                    Err (TypeErr_DuplicateMapPatternKey duplicate_key)
                 | None =>
-                    unify_map_entries
-                      fuel'
-                      ptrn_entries
-                      actual_entries
-                      subst
-                      ptrn_entries
-                      actual_entries
+                    match find_duplicate_map_key [] actual_entries with
+                    | Some duplicate_key => 
+                        Err (TypeErr_DuplicateMapKey duplicate_key)
+                    | None =>
+                        unify_map_entries
+                          fuel'
+                          ptrn_entries
+                          actual_entries
+                          subst
+                          ptrn_entries
+                          actual_entries
+                    end
                 end
-            | _ => Err (Err_TypeMismatch ptrn actual)
+            | _ => Err (TypeErr_Mismatch ptrn actual)
             end
       end
   end.
@@ -842,7 +852,7 @@ Fixpoint unify_type_list_aux
       end
   | _, _ =>
       Err
-        (Err_TypeListMismatch
+        (TypeErr_ListMismatch
            original_ptrns
            original_actuals)
   end.
@@ -892,7 +902,7 @@ Definition infer_comb_type_decl_info
       | Err e => Err e
       | Ok ctortype =>
           match type_comb_lookup Gamma0 ctortype with
-          | None => Err Err_UnknownCombSignature
+          | None => Err TypeErr_UnknownCombSignature
           | Some (tn, declared_ctor_type, holenames, argsptrn) =>
               Ok (tn, declared_ctor_type, holenames, argsptrn)
           end
@@ -1039,7 +1049,7 @@ Fixpoint infer_type_expr
       | Err e => Err e
       | Ok TN =>
           if contains_hole TN then
-            Err (Err_UseHoleInExpr tm)
+            Err (ExprErr_UseHole tm)
           else
             Ok TN
       end
@@ -1184,7 +1194,7 @@ Definition exec_command
       end
   | C_NewTypeAbbr X T =>
       if type_declared Gamma X then
-        Err (Err_DuplicateType X)
+        Err (TypeErr_DuplicateType X)
       else
         match norm_type Gamma T with
         | Err e => Err e
@@ -1196,25 +1206,25 @@ Definition exec_command
         end
   | C_DeclCombVariant tn ctortype holenames args =>
       if comb_type_closed Gamma tn then
-        Err (Err_CombTypeClosed tn)
+        Err (TypeErr_CombClosed tn)
       else if type_abbr_declared Gamma tn then
-        Err (Err_DuplicateType tn)
+        Err (TypeErr_DuplicateType tn)
       else
         match norm_type Gamma ctortype with
         | Err e => Err e
         | Ok nrmctortype =>
             if contains_hole nrmctortype then
-              Err (Err_HoleInCombConstructorType nrmctortype)
+              Err (TypeErr_UseHole nrmctortype)
             else
             if contains_prim nrmctortype then
-              Err (Err_UsePrimInDeclComb nrmctortype)
+              Err (TypeErr_UsePrimInDeclComb nrmctortype)
             else
               match validate_map_pattern_keys nrmctortype with
               | Err e => Err e
               | Ok _ =>
                   match type_comb_lookup Gamma nrmctortype with
                   | Some (oldtn, _, _, _) =>
-                      Err (Err_DuplicateCombSignature oldtn nrmctortype)
+                      Err (TypeErr_DuplicateCombSignature oldtn nrmctortype)
                   | None =>
                       match norm_comb_list Gamma args with
                       | Err e => Err e
@@ -1248,9 +1258,9 @@ Definition exec_command
       end
   | C_CloseCombType tn =>
       if negb (comb_type_declared Gamma tn) then
-        Err (Err_CloseUnknownCombType tn)
+        Err (TypeErr_CloseUnknownComb tn)
       else if comb_type_closed Gamma tn then
-        Err (Err_CombTypeAlreadyClosed tn)
+        Err (TypeErr_CombAlreadyClosed tn)
       else
         Ok
           {| ms_type_ctx := CloseCombType tn :: Gamma;
@@ -1516,7 +1526,7 @@ Fixpoint unfold_prog_aux
         end
   | C_NewTypeAbbr X T :: rest =>
       if type_def_declared Delta X then
-        Err (Err_DuplicateType X)
+        Err (TypeErr_DuplicateType X)
       else
         match unfold_type Delta T with
         | Err e => Err e
@@ -1817,7 +1827,7 @@ Example invalid_duplicate_map_pattern_key :
        [(T_Elem "key", T_Hole "V1");
         (T_Elem "key", T_Hole "V2")]) =
   Err
-    (Err_DuplicateMapPatternKey
+    (TypeErr_DuplicateMapPatternKey
        (T_Elem "key")).
 Proof.
   reflexivity.
@@ -1828,7 +1838,7 @@ Example invalid_hole_in_map_pattern_key :
     (T_Map
        [(T_Hole "K", T_Hole "V")]) =
   Err
-    (Err_HoleInMapPatternKey
+    (TypeErr_HoleInMapPatternKey
        (T_Hole "K")).
 Proof.
   reflexivity.
@@ -1842,7 +1852,7 @@ Example invalid_nested_duplicate_map_pattern_key :
            [(T_Elem "inner", T_Hole "V1");
             (T_Elem "inner", T_Hole "V2")])]) =
   Err
-    (Err_DuplicateMapPatternKey
+    (TypeErr_DuplicateMapPatternKey
        (T_Elem "inner")).
 Proof.
   reflexivity.
@@ -1865,7 +1875,7 @@ Example duplicate_map_key_after_normalization :
       validate_map_pattern_keys T
   end =
   Err
-    (Err_DuplicateMapPatternKey
+    (TypeErr_DuplicateMapPatternKey
        (T_Elem "key")).
 Proof.
   reflexivity.
@@ -1879,7 +1889,7 @@ Example unify_map_rejects_hole_in_key :
        [(T_Elem "key", T_Elem "value");
         (T_Elem "key2", T_Elem "val")]) =
   Err
-    (Err_HoleInMapPatternKey
+    (TypeErr_HoleInMapPatternKey
        (T_Hole "K")).
 Proof.
   reflexivity.
@@ -1898,7 +1908,7 @@ Example unify_map_rejects_nested_hole_in_key :
             T_Elem "key"],
          T_Elem "value")]) =
   Err
-    (Err_HoleInMapPatternKey
+    (TypeErr_HoleInMapPatternKey
        (T_Prod
           [T_Elem "prefix";
            T_Hole "K"])).
@@ -1971,7 +1981,7 @@ Example unify_map_inconsistent_value_hole :
        [(T_Elem "key1", T_Prim Prm_Left);
         (T_Elem "key2", T_Prim Prm_Right)]) =
   Err
-    (Err_TypeMismatch
+    (TypeErr_Mismatch
        (T_Prim Prm_Left)
        (T_Prim Prm_Right)).
 Proof.
@@ -1985,7 +1995,7 @@ Example unify_map_missing_key :
     (T_Map
        [(T_Elem "key", T_Elem "value")]) =
   Err
-    (Err_TypeMismatch
+    (TypeErr_Mismatch
        (T_Map
           [(T_Elem "missing", T_Hole "V")])
        (T_Map
@@ -2417,7 +2427,7 @@ Example test_unify_repeated_nested_hole_error :
     ]
   =
   Err
-    (Err_TypeMismatch
+    (TypeErr_Mismatch
        (T_Elem "Nat")
        (T_Elem "Bool")).
 Proof.
@@ -2430,7 +2440,7 @@ Example test_unify_different_comb_names :
     [T_Comb "List" [T_Elem "Nat"]]
   =
   Err
-    (Err_TypeMismatch
+    (TypeErr_Mismatch
        (T_Comb "Option" [T_Hole "a"])
        (T_Comb "List" [T_Elem "Nat"])).
 Proof.
@@ -2454,7 +2464,7 @@ Example test_unify_product_length_error :
     ]
   =
   Err
-    (Err_TypeListMismatch
+    (TypeErr_ListMismatch
        [T_Hole "a"; T_Hole "b"; T_Hole "c"]
        [T_Elem "Nat"; T_Elem "Nat2"]).
 Proof.
