@@ -916,24 +916,12 @@ Definition infer_comb_type_info
       (ctor : core_expr)
       (arglst : list core_expr)
       : result (TypeName * core_type * list core_type) :=
-      match infer_comb_type_decl_info f Gamma0 ctor with
-      | Err e => Err e
-      | Ok (tn, ctortype, holenames, argsptrn) =>
-          match infer_list f Gamma0 arglst with
-          | Err e => Err e
-          | Ok argtypes =>
-              match unify_core_type_list [] argsptrn argtypes with
-              | Err e => Err e
-              | Ok argsubst =>
-                  match
-                    holenames_in_subst_lookup holenames argsubst
-                  with
-                  | Err e => Err e
-                  | Ok typeargs => Ok (tn, ctortype, typeargs)
-                  end
-              end
-          end
-      end.
+  decl_info <- infer_comb_type_decl_info f Gamma0 ctor ;;
+  let '(tn, ctortype, holenames, argsptrn) := decl_info in
+  argtypes <- infer_list f Gamma0 arglst ;;
+  argsubst <- unify_core_type_list [] argsptrn argtypes ;;
+  typeargs <- holenames_in_subst_lookup holenames argsubst ;;
+  Ok (tn, ctortype, typeargs).
 
 Definition infer_comb_prim_app
       (f : type_context -> core_expr -> result core_type)
