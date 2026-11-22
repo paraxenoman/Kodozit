@@ -1395,46 +1395,33 @@ Fixpoint elaborate_prog_aux
         | Some TNK_Abbr => Err (TypeErr_DuplicateType tn)
         end
       in
-      match ThetaResult with
-      | Err e => Err e
-      | Ok Theta' =>
-          match elaborate_type Delta Theta ctor with
-          | Err e => Err e
-          | Ok ctor' =>
-              let fix elaborate_types
-                  (Ts : list source_type)
-                  : result (list core_type) :=
-                  match Ts with
-                  | [] => Ok []
-                  | T :: Ts' =>
-                      T' <- elaborate_type Delta Theta T ;;
-                      rest' <- elaborate_types Ts' ;;
-                      Ok (T' :: rest')
-                  end
-              in
-              match elaborate_types args with
-              | Err e => Err e
-              | Ok args' =>
-                  match
-                    elaborate_prog_aux
-                      Sigma
-                      Delta
-                      Theta'
-                      rest
-                  with
-                  | Err e => Err e
-                  | Ok rest' =>
-                      Ok
-                        (CC_DeclCombVariant
-                           tn
-                           ctor'
-                           holenames
-                           args'
-                         :: rest')
-                  end
-              end
+      Theta' <- ThetaResult ;;
+      ctor' <- elaborate_type Delta Theta' ctor ;;
+      let fix elaborate_types
+          (Ts : list source_type)
+          : result (list core_type) :=
+          match Ts with
+          | [] => Ok []
+          | T :: Ts' =>
+              T' <- elaborate_type Delta Theta' T ;;
+              rest' <- elaborate_types Ts' ;;
+              Ok (T' :: rest')
           end
-      end
+      in
+      args' <- elaborate_types args ;;
+      rest' <-
+        elaborate_prog_aux
+          Sigma
+          Delta
+          Theta'
+          rest ;;
+      Ok
+        (CC_DeclCombVariant
+           tn
+           ctor'
+           holenames
+           args'
+         :: rest')
   | SC_CloseCombType tn :: rest =>
       match lookup_type_name_kind Theta tn with
       | Some TNK_Abbr => Err (TypeErr_CloseUnknownComb tn)
@@ -1659,6 +1646,82 @@ Example example_good_prog10 := [
   SC_CloseCombType "Bool"
 ].
 Compute (run_prog example_good_prog10).
+
+Example elaborate_recursive_comb_type :
+  elaborate_prog
+    [
+      SC_DeclCombVariant
+        "List"
+        (ST_Elem "Nil")
+        ["A"]
+        [];
+
+      SC_DeclCombVariant
+        "List"
+        (ST_Elem "Cons")
+        ["A"]
+        [
+          ST_Hole "A";
+          ST_Comb "List" [ST_Hole "A"]
+        ];
+
+      SC_CloseCombType "List"
+    ]
+  =
+  Ok
+    [
+      CC_DeclCombVariant
+        "List"
+        (CT_Elem "Nil")
+        ["A"]
+        [];
+
+      CC_DeclCombVariant
+        "List"
+        (CT_Elem "Cons")
+        ["A"]
+        [
+          CT_Hole "A";
+          CT_Comb "List" [CT_Hole "A"]
+        ];
+
+      CC_CloseCombType "List"
+    ].
+Proof.
+  reflexivity.
+Qed.
+
+Example elaborate_first_recursive_variant :
+  elaborate_prog
+    [
+      SC_DeclCombVariant
+        "Stream"
+        (ST_Elem "Cons")
+        ["A"]
+        [
+          ST_Hole "A";
+          ST_Comb "Stream" [ST_Hole "A"]
+        ];
+
+      SC_CloseCombType "Stream"
+    ]
+  =
+  Ok
+    [
+      CC_DeclCombVariant
+        "Stream"
+        (CT_Elem "Cons")
+        ["A"]
+        [
+          CT_Hole "A";
+          CT_Comb "Stream" [CT_Hole "A"]
+        ];
+
+      CC_CloseCombType "Stream"
+    ].
+Proof.
+  reflexivity.
+Qed.
 
 
 Example elaborate_allows_multiple_comb_variants :
