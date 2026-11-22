@@ -115,7 +115,7 @@ Inductive source_expr : Type :=
       source_expr ->
       source_expr ->
       source_expr.
-      
+
 Inductive source_command : Type :=
   | SC_DeclVar :
       VarName ->
@@ -199,21 +199,15 @@ Inductive TypeBinding : Type :=
 
 Definition type_context : Type := list TypeBinding.
 
-Fixpoint eval_core_expr_list (f : core_expr -> result value) (ts : list core_expr) 
+Fixpoint eval_core_expr_list (f : core_expr -> result value) (ts : list core_expr)
   : result (list value) :=
   match ts with
   | [] => Ok []
   | t :: rest =>
-      match f t with
-      | Err e => Err e
-      | Ok v =>
-          match eval_core_expr_list f rest with
-          | Err e => Err e
-          | Ok vs => Ok (v :: vs)
-          end
-      end
+      v <- f t ;;
+      vs <- eval_core_expr_list f rest ;;
+      Ok (v :: vs)
   end.
-
 
 Fixpoint type_contains_abbr
     (T : source_type)
@@ -232,7 +226,6 @@ Fixpoint type_contains_abbr
   | _ =>
       false
   end.
-
 
 Fixpoint expr_contains_abbr
     (e : source_expr)
@@ -327,9 +320,9 @@ Fixpoint type_context_size (Gamma : type_context) : nat :=
   match Gamma with
   | [] => 0
   | BindCombType _ ctor _ args :: rest =>
-      core_type_size 
-        ctor 
-        + fold_right (fun T n => core_type_size T + n) 0 args 
+      core_type_size
+        ctor
+        + fold_right (fun T n => core_type_size T + n) 0 args
         + type_context_size rest
   | CloseCombType _ :: rest => type_context_size rest
   end.
@@ -385,7 +378,6 @@ Fixpoint permutation_eqb
       end
   end.
 
-
 Fixpoint core_type_beq (T1 T2 : core_type) : bool :=
   match T1, T2 with
   | CT_Hole X, CT_Hole Y => eqb X Y
@@ -431,10 +423,8 @@ Fixpoint validate_map_pattern_keys
       match Ts with
       | [] => Ok tt
       | T1 :: rest =>
-          match validate_map_pattern_keys T1 with
-          | Err e => Err e
-          | Ok _ => validate_types rest
-          end
+          _ <- validate_map_pattern_keys T1 ;;
+          validate_types rest
       end
   in
   let fix validate_entries
@@ -449,14 +439,9 @@ Fixpoint validate_map_pattern_keys
           else if type_mem key seen_keys then
             Err (TypeErr_DuplicateMapPatternKey key)
           else
-            match validate_map_pattern_keys key with
-            | Err e => Err e
-            | Ok _ =>
-                match validate_map_pattern_keys value with
-                | Err e => Err e
-                | Ok _ => validate_entries (key :: seen_keys) rest
-                end
-            end
+            _ <- validate_map_pattern_keys key ;;
+            _ <- validate_map_pattern_keys value ;;
+            validate_entries (key :: seen_keys) rest
       end
   in
   match T with
@@ -481,10 +466,8 @@ Fixpoint validate_map_pattern_keys_list
   match Ts with
   | [] => Ok tt
   | T :: rest =>
-      match validate_map_pattern_keys T with
-      | Err e => Err e
-      | Ok _ => validate_map_pattern_keys_list rest
-      end
+      _ <- validate_map_pattern_keys T ;;
+      validate_map_pattern_keys_list rest
   end.
 
 Fixpoint find_duplicate_map_key
@@ -506,7 +489,7 @@ Fixpoint core_expr_beq (e1 e2 : core_expr) : bool :=
   | CE_Prim p1, CE_Prim p2 => prim_beq p1 p2
   | CE_TRep T1, CE_TRep T2 => core_type_beq T1 T2
   | CE_Prod es1, CE_Prod es2 => list_eqb core_expr_beq es1 es2
-  | CE_Comb ctor1 args1, CE_Comb ctor2 args2 => 
+  | CE_Comb ctor1 args1, CE_Comb ctor2 args2 =>
       core_expr_beq ctor1 ctor2
       && list_eqb core_expr_beq args1 args2
   | CE_Map lst1, CE_Map lst2 =>
@@ -542,14 +525,9 @@ Fixpoint infer_list
   match ts with
   | [] => Ok []
   | t :: rest =>
-      match f Gamma t with
-      | Err e => Err e
-      | Ok T =>
-          match infer_list f Gamma rest with
-          | Err e => Err e
-          | Ok Ts => Ok (T :: Ts)
-          end
-      end
+      T <- f Gamma t ;;
+      Ts <- infer_list f Gamma rest ;;
+      Ok (T :: Ts)
   end.
 
 Fixpoint comb_type_closed (Gamma : type_context) (TN : TypeName) : bool :=
@@ -581,92 +559,45 @@ Fixpoint norm_core_type_fuel
           (Ts : list core_type)
           : result (list core_type) :=
           match Ts with
-          | [] =>
-              Ok []
+          | [] => Ok []
           | T1 :: rest =>
-              match norm_core_type_fuel fuel' T1 with
-              | Err e =>
-                  Err e
-              | Ok T1' =>
-                  match norm_types rest with
-                  | Err e =>
-                      Err e
-                  | Ok rest' =>
-                      Ok (T1' :: rest')
-                  end
-              end
+              T1' <- norm_core_type_fuel fuel' T1 ;;
+              rest' <- norm_types rest ;;
+              Ok (T1' :: rest')
           end
       in
       let fix norm_entries
           (entries : list (core_type * core_type))
           : result (list (core_type * core_type)) :=
           match entries with
-          | [] =>
-              Ok []
+          | [] => Ok []
           | (K, V) :: rest =>
-              match norm_core_type_fuel fuel' K with
-              | Err e =>
-                  Err e
-              | Ok K' =>
-                  match norm_core_type_fuel fuel' V with
-                  | Err e =>
-                      Err e
-                  | Ok V' =>
-                      match norm_entries rest with
-                      | Err e =>
-                          Err e
-                      | Ok rest' =>
-                          Ok ((K', V') :: rest')
-                      end
-                  end
-              end
+              K' <- norm_core_type_fuel fuel' K ;;
+              V' <- norm_core_type_fuel fuel' V ;;
+              rest' <- norm_entries rest ;;
+              Ok ((K', V') :: rest')
           end
       in
       match T with
-      | CT_Hole X =>
-          Ok (CT_Hole X)
-
-      | CT_Elem e =>
-          Ok (CT_Elem e)
-
-      | CT_Prim p =>
-          Ok (CT_Prim p)
-
+      | CT_Hole X => Ok (CT_Hole X)
+      | CT_Elem e => Ok (CT_Elem e)
+      | CT_Prim p => Ok (CT_Prim p)
       | CT_TRep T1 =>
-          match norm_core_type_fuel fuel' T1 with
-          | Err e =>
-              Err e
-          | Ok T1' =>
-              Ok (CT_TRep T1')
-          end
-
+          T1' <- norm_core_type_fuel fuel' T1 ;;
+          Ok (CT_TRep T1')
       | CT_Prod Ts =>
           match norm_types Ts with
-          | Err e =>
-              Err e
-          | Ok [] =>
-              Ok (CT_Prod [])
-          | Ok [T1] =>
-              Err (TypeErr_InvalidProd T1)
-          | Ok Ts' =>
-              Ok (CT_Prod Ts')
+          | Err e => Err e
+          | Ok [] => Ok (CT_Prod [])
+          | Ok [T1] => Err (TypeErr_InvalidProd T1)
+          | Ok Ts' => Ok (CT_Prod Ts')
           end
-
       | CT_Comb tn Ts =>
-          match norm_types Ts with
-          | Err e =>
-              Err e
-          | Ok Ts' =>
-              Ok (CT_Comb tn Ts')
-          end
-
+          Ts' <- norm_types Ts ;;
+          Ok (CT_Comb tn Ts')
       | CT_Map entries =>
-          match norm_entries entries with
-          | Err e =>
-              Err e
-          | Ok entries' =>
-              Ok (CT_Map entries')
-          end
+          entries' <- norm_entries entries ;;
+          Ok (CT_Map entries')
       end
   end.
 
@@ -681,14 +612,9 @@ Fixpoint norm_list (ts : list core_type) : result (list core_type) :=
   match ts with
   | [] => Ok []
   | t :: rest =>
-      match norm_core_type t with
-      | Err e => Err e
-      | Ok tN =>
-          match norm_list rest with
-          | Err e => Err e
-          | Ok restN => Ok (tN :: restN)
-          end
-      end
+      tN <- norm_core_type t ;;
+      restN <- norm_list rest ;;
+      Ok (tN :: restN)
   end.
 
 Fixpoint norm_comb_list
@@ -697,31 +623,21 @@ Fixpoint norm_comb_list
   match ts with
   | [] => Ok []
   | t :: rest =>
-      match norm_core_type t with
-      | Err e => Err e
-      | Ok tN =>
-          if contains_prim tN then
-            Err (TypeErr_UsePrimInDeclComb tN)
-          else
-            match norm_comb_list rest with
-            | Err e => Err e
-            | Ok restN => Ok (tN :: restN)
-            end
-      end
+      tN <- norm_core_type t ;;
+      if contains_prim tN then
+        Err (TypeErr_UsePrimInDeclComb tN)
+      else
+        restN <- norm_comb_list rest ;;
+        Ok (tN :: restN)
   end.
 
 Definition norm_core_type_beq
     (Gamma : type_context)
     (T1 T2 : core_type)
   : result bool :=
-  match norm_core_type T1 with
-  | Err e => Err e
-  | Ok N1 =>
-      match norm_core_type T2 with
-      | Err e => Err e
-      | Ok N2 => Ok (core_type_beq N1 N2)
-      end
-  end.
+  N1 <- norm_core_type T1 ;;
+  N2 <- norm_core_type T2 ;;
+  Ok (core_type_beq N1 N2).
 
 Fixpoint value_beq (v1 v2 : value) : bool :=
   match v1, v2 with
@@ -763,8 +679,8 @@ Fixpoint unify_core_type_fuel
       | ptrn0 :: ptrn_rest, actual0 :: actual_rest =>
           match unify_core_type_fuel fuel' subst0 ptrn0 actual0 with
           | Err e => Err e
-          | Ok subst1 => 
-              unify_list_elements 
+          | Ok subst1 =>
+              unify_list_elements
                   fuel' ptrns_orig actuals_orig subst1 ptrn_rest actual_rest
           end
       | _, _ => Err (TypeErr_ListMismatch ptrns_orig actuals_orig)
@@ -776,24 +692,17 @@ Fixpoint unify_core_type_fuel
       {struct actual_entries}
       : option (core_type * list (core_type * core_type)) :=
       match actual_entries with
-      | [] =>
-          None
+      | [] => None
       | (actual_key, actual_value) :: actual_rest =>
           if core_type_beq ptrn_key actual_key then
             Some (actual_value, actual_rest)
           else
             match
-              find_and_remove_map_entry
-                ptrn_key
-                actual_rest
+              find_and_remove_map_entry ptrn_key actual_rest
             with
-            | None =>
-                None
+            | None => None
             | Some (found_value, remaining_entries) =>
-                Some
-                  (found_value,
-                   (actual_key, actual_value)
-                     :: remaining_entries)
+                Some (found_value, (actual_key, actual_value) :: remaining_entries)
             end
       end
   in
@@ -807,16 +716,13 @@ Fixpoint unify_core_type_fuel
       {struct ptrn_entries}
       : result type_subst :=
       match ptrn_entries with
-      | [] =>
-          Ok subst0
+      | [] => Ok subst0
       | (ptrn_key, ptrn_value) :: ptrn_rest =>
           if contains_hole ptrn_key then
             Err (TypeErr_HoleInMapPatternKey ptrn_key)
           else
             match
-              find_and_remove_map_entry
-                ptrn_key
-                actual_entries
+              find_and_remove_map_entry ptrn_key actual_entries
             with
             | None =>
                 Err
@@ -831,8 +737,7 @@ Fixpoint unify_core_type_fuel
                     ptrn_value
                     actual_value
                 with
-                | Err e =>
-                    Err e
+                | Err e => Err e
                 | Ok subst1 =>
                     unify_map_entries
                       fuel'
@@ -887,8 +792,8 @@ Fixpoint unify_core_type_fuel
           end
       | CT_Prod ptrn_args =>
           match actual with
-          | CT_Prod actual_args => 
-                unify_list_elements 
+          | CT_Prod actual_args =>
+                unify_list_elements
                   fuel' ptrn_args actual_args subst ptrn_args actual_args
           | _ => Err (TypeErr_Mismatch ptrn actual)
           end
@@ -896,7 +801,7 @@ Fixpoint unify_core_type_fuel
           match actual with
           | CT_Comb actual_name actual_args =>
               if eqb ptrn_name actual_name then
-                unify_list_elements 
+                unify_list_elements
                   fuel' ptrn_args actual_args subst ptrn_args actual_args
               else
                 Err (TypeErr_Mismatch ptrn actual)
@@ -910,7 +815,7 @@ Fixpoint unify_core_type_fuel
                     Err (TypeErr_DuplicateMapPatternKey duplicate_key)
                 | None =>
                     match find_duplicate_map_key [] actual_entries with
-                    | Some duplicate_key => 
+                    | Some duplicate_key =>
                         Err (TypeErr_DuplicateMapKey duplicate_key)
                     | None =>
                         unify_map_entries
@@ -942,16 +847,13 @@ Fixpoint unify_core_type_list_aux
   match ptrns, actuals with
   | [], [] => Ok subst
   | ptrn :: ptrn_rest, actual :: actual_rest =>
-      match unify_core_type subst ptrn actual with
-      | Err e => Err e
-      | Ok subst' =>
-          unify_core_type_list_aux
-            subst'
-            ptrn_rest
-            actual_rest
-            original_ptrns
-            original_actuals
-      end
+      subst' <- unify_core_type subst ptrn actual ;;
+      unify_core_type_list_aux
+        subst'
+        ptrn_rest
+        actual_rest
+        original_ptrns
+        original_actuals
   | _, _ =>
       Err
         (TypeErr_ListMismatch
@@ -988,10 +890,8 @@ Fixpoint holenames_in_subst_lookup
       match type_hole_lookup subst X with
       | None => Err (Err_UnboundHole X)
       | Some T =>
-          match holenames_in_subst_lookup rest subst with
-          | Err e => Err e
-          | Ok Ts => Ok (T :: Ts)
-          end
+          Ts <- holenames_in_subst_lookup rest subst ;;
+          Ok (T :: Ts)
       end
   end.
 
@@ -1087,14 +987,13 @@ Fixpoint core_expr_key_mem
   | [] => false
   | key' :: rest => core_expr_beq key key' || core_expr_key_mem key rest
   end.
-  
+
 Fixpoint value_key_mem
     (key : value)
     (keys : list value)
   : bool :=
   match keys with
-  | [] =>
-      false
+  | [] => false
   | key' :: rest => value_beq key key' || value_key_mem key rest
   end.
 
@@ -1126,7 +1025,7 @@ Fixpoint infer_type_core_expr
                       | Err e => Err e
                       | Ok normalized_value_type =>
                           match
-                            infer_map_entries 
+                            infer_map_entries
                               (normalized_key_type :: seen_key_types) rest
                           with
                           | Err e => Err e
@@ -1146,16 +1045,13 @@ Fixpoint infer_type_core_expr
   | CE_Elem e => Ok (CT_Elem e)
   | CE_Prim p => Ok (CT_Prim p)
   | CE_TRep T =>
-      match norm_core_type (CT_TRep T) with
-      | Err e => Err e
-      | Ok TN =>
-          if contains_hole TN then
-            Err (ExprErr_UseHole tm)
-          else
-            Ok TN
-      end
+      TN <- norm_core_type (CT_TRep T) ;;
+      if contains_hole TN then
+        Err (ExprErr_UseHole tm)
+      else
+        Ok TN
   | CE_Prod [] => Ok CT_Unit
-  | CE_Prod [x] => Err (ExprErr_InvalidProd tm) 
+  | CE_Prod [x] => Err (ExprErr_InvalidProd tm)
   | CE_Prod (x :: xs) =>
       match
         infer_list infer_type_core_expr Gamma (x :: xs)
@@ -1176,19 +1072,12 @@ Fixpoint infer_type_core_expr
           Ok (CT_Comb tn (map trep_replace typeargs))
       end
   | CE_Map entries =>
-      match infer_map_entries [] entries with
-      | Err e => Err e
-      | Ok entry_types => Ok (CT_Map entry_types)
-      end
+      entry_types <- infer_map_entries [] entries ;;
+      Ok (CT_Map entry_types)
   | CE_App a b =>
-      match infer_type_core_expr Gamma a with
-      | Err e => Err e
-      | Ok ta =>
-          match infer_type_core_expr Gamma b with
-          | Err e => Err e
-          | Ok tb =>  infer_type_app infer_type_core_expr Gamma a b ta tb
-          end 
-      end
+      ta <- infer_type_core_expr Gamma a ;;
+      tb <- infer_type_core_expr Gamma b ;;
+       infer_type_app infer_type_core_expr Gamma a b ta tb
   end.
 
 Fixpoint eval_core_expr
@@ -1199,30 +1088,20 @@ Fixpoint eval_core_expr
   | CE_Elem e => Ok (V_Elem e)
   | CE_Prim p => Ok (V_Prim p)
   | CE_TRep T =>
-      match norm_core_type T with
-      | Err e => Err e
-      | Ok TN => Ok (V_TRep TN)
-      end
+      TN <- norm_core_type T ;;
+      Ok (V_TRep TN)
   | CE_Prod es =>
       match es with
       | [] => Ok V_Unit
       | [e] => Err (ExprErr_InvalidProd tm)
       | _ =>
-          match eval_core_expr_list eval_core_expr es with
-          | Err e => Err e
-          | Ok vs => Ok (V_Prod vs)
-          end
+          vs <- eval_core_expr_list eval_core_expr es ;;
+          Ok (V_Prod vs)
       end
   | CE_Comb ctor args =>
-      match eval_core_expr ctor with
-      | Err e => Err e
-      | Ok ctor_value =>
-          match eval_core_expr_list eval_core_expr args with
-          | Err e => Err e
-          | Ok arg_values =>
-              Ok (V_Comb ctor_value arg_values)
-          end
-      end
+      ctor_value <- eval_core_expr ctor ;;
+      arg_values <- eval_core_expr_list eval_core_expr args ;;
+      Ok (V_Comb ctor_value arg_values)
   | CE_Map entries =>
       let fix eval_map_entries
           (seen_keys : list value)
@@ -1231,22 +1110,13 @@ Fixpoint eval_core_expr
           match xs with
           | [] => Ok []
           | (key_expr, val_expr) :: rest =>
-              match eval_core_expr key_expr with
-              | Err e => Err e
-              | Ok key_value =>
-                  if value_key_mem key_value seen_keys then
-                    Err (ExprErr_DuplicateMapKey key_expr)
-                  else
-                    match eval_core_expr val_expr with
-                    | Err e => Err e
-                    | Ok val_value =>
-                        match eval_map_entries (key_value :: seen_keys) rest with
-                        | Err e => Err e
-                        | Ok rest_values =>
-                            Ok ((key_value, val_value) :: rest_values)
-                        end
-                    end
-              end
+              key_value <- eval_core_expr key_expr ;;
+              if value_key_mem key_value seen_keys then
+                Err (ExprErr_DuplicateMapKey key_expr)
+              else
+                val_value <- eval_core_expr val_expr ;;
+                rest_values <- eval_map_entries (key_value :: seen_keys) rest ;;
+                Ok ((key_value, val_value) :: rest_values)
           end
       in
       match eval_map_entries [] entries with
@@ -1349,14 +1219,9 @@ Fixpoint validate_core_type_holes_declared
       match entries with
       | [] => Ok tt
       | (K, V) :: rest =>
-          match validate_core_type_holes_declared holenames K with
-          | Err e => Err e
-          | Ok _ =>
-              match validate_core_type_holes_declared holenames V with
-              | Err e => Err e
-              | Ok _ => validate_entries rest
-              end
-          end
+          _ <- validate_core_type_holes_declared holenames K ;;
+          _ <- validate_core_type_holes_declared holenames V ;;
+          validate_entries rest
       end
   in
   match T with
@@ -1380,10 +1245,8 @@ Fixpoint validate_argument_holes_declared
   match args with
   | [] => Ok tt
   | T :: rest =>
-      match validate_core_type_holes_declared holenames T with
-      | Err e => Err e
-      | Ok _ => validate_argument_holes_declared holenames rest
-      end
+      _ <- validate_core_type_holes_declared holenames T ;;
+      validate_argument_holes_declared holenames rest
   end.
 
 Fixpoint validate_unique_holenames_aux
@@ -1408,14 +1271,9 @@ Definition validate_unique_holenames (holenames : list string)
 
 Definition validate_hole_declaration (holenames : list string) (args : list core_type)
   : result unit :=
-  match validate_unique_holenames holenames with
-  | Err e => Err e
-  | Ok _ =>
-      match validate_declared_holes_used holenames args with
-      | Err e => Err e
-      | Ok _ => validate_argument_holes_declared holenames args
-      end
-  end.
+  _ <- validate_unique_holenames holenames ;;
+  _ <- validate_declared_holes_used holenames args ;;
+  validate_argument_holes_declared holenames args.
 
 Definition exec_core_command
     (st : machine_state)
@@ -1443,42 +1301,25 @@ Definition exec_core_command
                   | Some (oldtn, _, _, _) =>
                       Err (TypeErr_DuplicateCombSignature oldtn nrmctortype)
                   | None =>
-                      match norm_comb_list args with
-                      | Err e => Err e
-                      | Ok nrmargs =>
-                          match validate_hole_declaration holenames nrmargs with
-                          | Err e => Err e
-                          | Ok _ =>
-                            match validate_map_pattern_keys_list nrmargs with
-                            | Err e => Err e
-                            | Ok _ =>
-                                Ok
-                                  {| ms_type_ctx :=
-                                       BindCombType tn nrmctortype holenames nrmargs 
-                                       :: Gamma;
-                                     ms_last_type := ms_last_type st;
-                                     ms_last_value := ms_last_value st |}
-                            end
-                          end
-                      end
+                      nrmargs <- norm_comb_list args ;;
+                      _ <- validate_hole_declaration holenames nrmargs ;;
+                      _ <- validate_map_pattern_keys_list nrmargs ;;
+                      Ok
+                        {| ms_type_ctx :=
+                             BindCombType tn nrmctortype holenames nrmargs
+                             :: Gamma;
+                           ms_last_type := ms_last_type st;
+                           ms_last_value := ms_last_value st |}
                   end
               end
         end
   | CC_Eval e =>
-      match infer_type_core_expr Gamma e with
-      | Err er =>
-          Err er
-      | Ok T =>
-          match eval_core_expr e with
-          | Err er =>
-              Err er
-          | Ok v =>
-              Ok
-                {| ms_type_ctx := Gamma;
-                   ms_last_type := T;
-                   ms_last_value := v |}
-          end
-      end
+      T <- infer_type_core_expr Gamma e ;;
+      v <- eval_core_expr e ;;
+      Ok
+        {| ms_type_ctx := Gamma;
+           ms_last_type := T;
+           ms_last_value := v |}
   | CC_CloseCombType tn =>
       if negb (comb_type_declared Gamma tn) then
         Err (TypeErr_CloseUnknownComb tn)
@@ -1532,20 +1373,11 @@ Fixpoint elaborate_type
       (Ts : list source_type)
       : result (list core_type) :=
       match Ts with
-      | [] =>
-          Ok []
+      | [] => Ok []
       | T1 :: rest =>
-          match elaborate_type Delta T1 with
-          | Err e =>
-              Err e
-          | Ok T1' =>
-              match elaborate_types rest with
-              | Err e =>
-                  Err e
-              | Ok rest' =>
-                  Ok (T1' :: rest')
-              end
-          end
+          T1' <- elaborate_type Delta T1 ;;
+          rest' <- elaborate_types rest ;;
+          Ok (T1' :: rest')
       end
   in
   let fix elaborate_entries
@@ -1555,73 +1387,33 @@ Fixpoint elaborate_type
       | [] =>
           Ok []
       | (K, V) :: rest =>
-          match elaborate_type Delta K with
-          | Err e =>
-              Err e
-          | Ok K' =>
-              match elaborate_type Delta V with
-              | Err e =>
-                  Err e
-              | Ok V' =>
-                  match elaborate_entries rest with
-                  | Err e =>
-                      Err e
-                  | Ok rest' =>
-                      Ok ((K', V') :: rest')
-                  end
-              end
-          end
+          K' <- elaborate_type Delta K ;;
+          V' <- elaborate_type Delta V ;;
+          rest' <- elaborate_entries rest ;;
+          Ok ((K', V') :: rest')
       end
   in
   match T with
-  | ST_Hole X =>
-      Ok (CT_Hole X)
-
+  | ST_Hole X => Ok (CT_Hole X)
   | ST_Abbr X =>
       match lookup_type_def Delta X with
-      | None =>
-          Err (Err_UnboundTypeAbbr X)
-      | Some T' =>
-          Ok T'
+      | None => Err (Err_UnboundTypeAbbr X)
+      | Some T' => Ok T'
       end
-
-  | ST_Elem e =>
-      Ok (CT_Elem e)
-
-  | ST_Prim p =>
-      Ok (CT_Prim p)
-
+  | ST_Elem e => Ok (CT_Elem e)
+  | ST_Prim p => Ok (CT_Prim p)
   | ST_TRep T1 =>
-      match elaborate_type Delta T1 with
-      | Err e =>
-          Err e
-      | Ok T1' =>
-          Ok (CT_TRep T1')
-      end
-
+      T1' <- elaborate_type Delta T1 ;;
+      Ok (CT_TRep T1')
   | ST_Prod Ts =>
-      match elaborate_types Ts with
-      | Err e =>
-          Err e
-      | Ok Ts' =>
-          Ok (CT_Prod Ts')
-      end
-
+      Ts' <- elaborate_types Ts ;;
+      Ok (CT_Prod Ts')
   | ST_Comb tn Ts =>
-      match elaborate_types Ts with
-      | Err e =>
-          Err e
-      | Ok Ts' =>
-          Ok (CT_Comb tn Ts')
-      end
-
+      Ts' <- elaborate_types Ts ;;
+      Ok (CT_Comb tn Ts')
   | ST_Map entries =>
-      match elaborate_entries entries with
-      | Err e =>
-          Err e
-      | Ok entries' =>
-          Ok (CT_Map entries')
-      end
+      entries' <- elaborate_entries entries ;;
+      Ok (CT_Map entries')
   end.
 
 Fixpoint elaborate_expr
@@ -1634,111 +1426,50 @@ Fixpoint elaborate_expr
       (es : list source_expr)
       : result (list core_expr) :=
       match es with
-      | [] =>
-          Ok []
+      | [] => Ok []
       | e1 :: rest =>
-          match elaborate_expr Sigma Delta e1 with
-          | Err er =>
-              Err er
-          | Ok e1' =>
-              match elaborate_exprs rest with
-              | Err er =>
-                  Err er
-              | Ok rest' =>
-                  Ok (e1' :: rest')
-              end
-          end
+          e1' <- elaborate_expr Sigma Delta e1 ;;
+          rest' <- elaborate_exprs rest ;;
+          Ok (e1' :: rest')
       end
   in
   let fix elaborate_entries
       (entries : list (source_expr * source_expr))
       : result (list (core_expr * core_expr)) :=
       match entries with
-      | [] =>
-          Ok []
+      | [] => Ok []
       | (K, V) :: rest =>
-          match elaborate_expr Sigma Delta K with
-          | Err er =>
-              Err er
-          | Ok K' =>
-              match elaborate_expr Sigma Delta V with
-              | Err er =>
-                  Err er
-              | Ok V' =>
-                  match elaborate_entries rest with
-                  | Err er =>
-                      Err er
-                  | Ok rest' =>
-                      Ok ((K', V') :: rest')
-                  end
-              end
-          end
+          K' <- elaborate_expr Sigma Delta K ;;
+          V' <- elaborate_expr Sigma Delta V ;;
+          rest' <- elaborate_entries rest ;;
+          Ok ((K', V') :: rest')
       end
   in
   match e with
   | SE_Var X =>
       match lookup_expr_def Sigma X with
-      | None =>
-          Err (Err_UnboundVar X)
-      | Some e' =>
-          Ok e'
+      | None => Err (Err_UnboundVar X)
+      | Some e' => Ok e'
       end
-
-  | SE_Elem x =>
-      Ok (CE_Elem x)
-
-  | SE_Prim p =>
-      Ok (CE_Prim p)
-
+  | SE_Elem x => Ok (CE_Elem x)
+  | SE_Prim p => Ok (CE_Prim p)
   | SE_TRep T =>
-      match elaborate_type Delta T with
-      | Err er =>
-          Err er
-      | Ok T' =>
-          Ok (CE_TRep T')
-      end
-
+      T' <- elaborate_type Delta T ;;
+      Ok (CE_TRep T')
   | SE_Prod es =>
-      match elaborate_exprs es with
-      | Err er =>
-          Err er
-      | Ok es' =>
-          Ok (CE_Prod es')
-      end
-
+      es' <- elaborate_exprs es ;;
+      Ok (CE_Prod es')
   | SE_Comb ctor args =>
-      match elaborate_expr Sigma Delta ctor with
-      | Err er =>
-          Err er
-      | Ok ctor' =>
-          match elaborate_exprs args with
-          | Err er =>
-              Err er
-          | Ok args' =>
-              Ok (CE_Comb ctor' args')
-          end
-      end
-
+      ctor' <- elaborate_expr Sigma Delta ctor ;;
+      args' <- elaborate_exprs args ;;
+      Ok (CE_Comb ctor' args')
   | SE_Map entries =>
-      match elaborate_entries entries with
-      | Err er =>
-          Err er
-      | Ok entries' =>
-          Ok (CE_Map entries')
-      end
-
+      entries' <- elaborate_entries entries ;;
+      Ok (CE_Map entries')
   | SE_App a b =>
-      match elaborate_expr Sigma Delta a with
-      | Err er =>
-          Err er
-      | Ok a' =>
-          match elaborate_expr Sigma Delta b with
-          | Err er =>
-              Err er
-          | Ok b' =>
-              Ok (CE_App a' b')
-          end
-      end
+      a' <- elaborate_expr Sigma Delta a ;;
+      b' <- elaborate_expr Sigma Delta b ;;
+      Ok (CE_App a' b')
   end.
 
 Inductive TypeNameKind : Type :=
@@ -1769,85 +1500,56 @@ Fixpoint elaborate_prog_aux
     {struct prg}
   : result core_prog :=
   match prg with
-  | [] =>
-      Ok []
-
+  | [] => Ok []
   | SC_DeclVar X rhs :: rest =>
       match lookup_expr_def Sigma X with
-      | Some _ =>
-          Err (Err_DuplicateVar X)
+      | Some _ => Err (Err_DuplicateVar X)
       | None =>
-          match elaborate_expr Sigma Delta rhs with
-          | Err e =>
-              Err e
-          | Ok rhs' =>
-              elaborate_prog_aux
-                ((X, rhs') :: Sigma)
-                Delta
-                Theta
-                rest
-          end
+          rhs' <- elaborate_expr Sigma Delta rhs ;;
+          elaborate_prog_aux
+            ((X, rhs') :: Sigma)
+            Delta
+            Theta
+            rest
       end
-
   | SC_NewTypeAbbr X T :: rest =>
       match lookup_type_name_kind Theta X with
-      | Some _ =>
-          Err (TypeErr_DuplicateType X)
+      | Some _ => Err (TypeErr_DuplicateType X)
       | None =>
-          match elaborate_type Delta T with
-          | Err e =>
-              Err e
-          | Ok T' =>
-              elaborate_prog_aux
-                Sigma
-                ((X, T') :: Delta)
-                ((X, TNK_Abbr) :: Theta)
-                rest
-          end
+          T' <- elaborate_type Delta T ;;
+          elaborate_prog_aux
+            Sigma
+            ((X, T') :: Delta)
+            ((X, TNK_Abbr) :: Theta)
+            rest
       end
-
   | SC_DeclCombVariant tn ctor holenames args :: rest =>
       let ThetaResult :=
         match lookup_type_name_kind Theta tn with
-        | None =>
-            Ok ((tn, TNK_Comb) :: Theta)
-        | Some TNK_Comb =>
-            Ok Theta
-        | Some TNK_Abbr =>
-            Err (TypeErr_DuplicateType tn)
+        | None => Ok ((tn, TNK_Comb) :: Theta)
+        | Some TNK_Comb => Ok Theta
+        | Some TNK_Abbr => Err (TypeErr_DuplicateType tn)
         end
       in
       match ThetaResult with
-      | Err e =>
-          Err e
+      | Err e => Err e
       | Ok Theta' =>
           match elaborate_type Delta ctor with
-          | Err e =>
-              Err e
+          | Err e => Err e
           | Ok ctor' =>
               let fix elaborate_types
                   (Ts : list source_type)
                   : result (list core_type) :=
                   match Ts with
-                  | [] =>
-                      Ok []
+                  | [] => Ok []
                   | T :: Ts' =>
-                      match elaborate_type Delta T with
-                      | Err e =>
-                          Err e
-                      | Ok T' =>
-                          match elaborate_types Ts' with
-                          | Err e =>
-                              Err e
-                          | Ok rest' =>
-                              Ok (T' :: rest')
-                          end
-                      end
+                      T' <- elaborate_type Delta T ;;
+                      rest' <- elaborate_types Ts' ;;
+                      Ok (T' :: rest')
                   end
               in
               match elaborate_types args with
-              | Err e =>
-                  Err e
+              | Err e => Err e
               | Ok args' =>
                   match
                     elaborate_prog_aux
@@ -1856,8 +1558,7 @@ Fixpoint elaborate_prog_aux
                       Theta'
                       rest
                   with
-                  | Err e =>
-                      Err e
+                  | Err e => Err e
                   | Ok rest' =>
                       Ok
                         (CC_DeclCombVariant
@@ -1870,13 +1571,10 @@ Fixpoint elaborate_prog_aux
               end
           end
       end
-
   | SC_CloseCombType tn :: rest =>
       match lookup_type_name_kind Theta tn with
-      | Some TNK_Abbr =>
-          Err (TypeErr_CloseUnknownComb tn)
-      | None =>
-          Err (TypeErr_CloseUnknownComb tn)
+      | Some TNK_Abbr => Err (TypeErr_CloseUnknownComb tn)
+      | None => Err (TypeErr_CloseUnknownComb tn)
       | Some TNK_Comb =>
           match
             elaborate_prog_aux
@@ -1885,17 +1583,13 @@ Fixpoint elaborate_prog_aux
               Theta
               rest
           with
-          | Err e =>
-              Err e
-          | Ok rest' =>
-              Ok (CC_CloseCombType tn :: rest')
+          | Err e => Err e
+          | Ok rest' => Ok (CC_CloseCombType tn :: rest')
           end
       end
-
   | SC_Eval e :: rest =>
       match elaborate_expr Sigma Delta e with
-      | Err er =>
-          Err er
+      | Err er => Err er
       | Ok e' =>
           match
             elaborate_prog_aux
@@ -1904,10 +1598,8 @@ Fixpoint elaborate_prog_aux
               Theta
               rest
           with
-          | Err er =>
-              Err er
-          | Ok rest' =>
-              Ok (CC_Eval e' :: rest')
+          | Err er => Err er
+          | Ok rest' => Ok (CC_Eval e' :: rest')
           end
       end
   end.
@@ -1928,38 +1620,25 @@ Fixpoint run_core_prog_aux
     {struct prg}
   : result machine_state :=
   match prg with
-  | [] =>
-      Ok st
+  | [] => Ok st
   | cmd :: rest =>
-      match exec_core_command st cmd with
-      | Err e =>
-          Err e
-      | Ok st' =>
-          run_core_prog_aux st' rest
-      end
+      st' <- exec_core_command st cmd ;;
+      run_core_prog_aux st' rest
   end.
 
 Definition run_core_prog
     (prg : core_prog)
   : result Prg_Result :=
-  match run_core_prog_aux initial_state prg with
-  | Err e =>
-      Err e
-  | Ok st =>
-      Ok
-        {| prog_type := ms_last_type st;
-           prog_val := ms_last_value st |}
-  end.
+  st <- run_core_prog_aux initial_state prg ;;
+  Ok
+    {| prog_type := ms_last_type st;
+       prog_val := ms_last_value st |}.
 
 Definition run_prog
     (input_program : source_prog)
   : result Prg_Result :=
-  match elaborate_prog input_program with
-  | Err e =>
-      Err e
-  | Ok core_program =>
-      run_core_prog core_program
-  end.
+  core_program <- elaborate_prog input_program ;;
+  run_core_prog core_program.
 
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog0 := [
