@@ -2,10 +2,11 @@ Require Import Kodozit.Seos.
 
 Require Import Stdlib.Strings.String.
 Require Import Stdlib.Lists.List.
-
+Require Import ExtLib.Structures.Monad.
 Import ListNotations.
+Import MonadNotation.
 Open Scope list_scope.
-
+Open Scope monad_scope.
 
 (* Тривиальный пример хорошей программы *)
 Example example_good_prog0 := [
@@ -162,6 +163,28 @@ Example example_good_prog10 := [
   SC_CloseCombType "Bool"
 ].
 Compute (run_prog example_good_prog10).
+
+Definition elaborate_prog (prg : source_prog) : result core_prog :=
+  let fix elaborate_commands
+      (est : elaboration_state)
+      (cmds : source_prog)
+      {struct cmds}
+      : result core_prog :=
+      match cmds with
+      | [] => Ok []
+      | cmd :: rest =>
+          ec <- elaborate_command est cmd ;;
+          rest' <-
+            elaborate_commands
+              (ec_elaboration_state ec)
+              rest ;;
+          match ec_core_command ec with
+          | None => Ok rest'
+          | Some core_cmd => Ok (core_cmd :: rest')
+          end
+      end
+  in
+  elaborate_commands initial_elaboration_state prg.
 
 Example elaborate_recursive_comb_type :
   elaborate_prog
@@ -1131,3 +1154,5 @@ Example test_unify_product_length_error :
 Proof.
   reflexivity.
 Qed.
+
+

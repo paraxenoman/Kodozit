@@ -1238,6 +1238,22 @@ Fixpoint lookup_type_name_kind
         lookup_type_name_kind rest X
   end.
 
+Record elaboration_state : Type := {
+  es_expr_defs : expr_def_context;
+  es_type_defs : type_def_context;
+  es_type_names : type_name_context
+}.
+
+Definition initial_elaboration_state : elaboration_state :=
+  {| es_expr_defs := [];
+     es_type_defs := [];
+     es_type_names := [] |}.
+
+Record elaborated_command : Type := {
+  ec_elaboration_state : elaboration_state;
+  ec_core_command : option core_command
+}.
+
 Fixpoint elaborate_type
     (Delta : type_def_context)
     (Theta : type_name_context)
@@ -1298,6 +1314,19 @@ Fixpoint elaborate_type
       Ok (CT_Map entries')
   end.
 
+Fixpoint elaborate_type_list
+    (Delta : type_def_context)
+    (Theta : type_name_context)
+    (Ts : list source_type)
+  : result (list core_type) :=
+  match Ts with
+  | [] => Ok []
+  | T :: rest =>
+      T' <- elaborate_type Delta Theta T ;;
+      rest' <- elaborate_type_list Delta Theta rest ;;
+      Ok (T' :: rest')
+  end.
+
 Fixpoint elaborate_expr
     (Sigma : expr_def_context)
     (Delta : type_def_context)
@@ -1355,140 +1384,119 @@ Fixpoint elaborate_expr
       Ok (CE_App a' b')
   end.
 
-Fixpoint elaborate_prog_aux
-    (Sigma : expr_def_context)
-    (Delta : type_def_context)
-    (Theta : type_name_context)
-    (prg : source_prog)
-    {struct prg}
-  : result core_prog :=
-  match prg with
-  | [] => Ok []
-  | SC_DeclVar X rhs :: rest =>
-      match lookup_expr_def Sigma X with
-      | Some _ => Err (Err_DuplicateVar X)
-      | None =>
-          rhs' <- elaborate_expr Sigma Delta Theta rhs ;;
-          elaborate_prog_aux
-            ((X, rhs') :: Sigma)
-            Delta
-            Theta
-            rest
-      end
-  | SC_NewTypeAbbr X T :: rest =>
+Definition elaborate_command
+    (est : elaboration_state)
+    (cmd : source_command)
+  : result elaborated_command :=
+  let Sigma := es_expr_defs est in
+  let Delta := es_type_defs est in
+  let Theta := es_type_names est in
+  match cmd with
+  | SC_DeclVar X rhs =>
+      if expr_def_declared Sigma X then
+        Err (Err_DuplicateVar X)
+      else
+        rhs' <- elaborate_expr Sigma Delta Theta rhs ;;
+        Ok
+          {| ec_elaboration_state :=
+               {| es_expr_defs := (X, rhs') :: Sigma;
+                  es_type_defs := Delta;
+                  es_type_names := Theta |};
+             ec_core_command := None |}
+
+  | SC_NewTypeAbbr X T =>
       match lookup_type_name_kind Theta X with
-      | Some _ => Err (TypeErr_DuplicateType X)
+      | Some _ =>
+          Err (TypeErr_DuplicateType X)
       | None =>
           T' <- elaborate_type Delta Theta T ;;
           Tn <- norm_core_type T' ;;
-          elaborate_prog_aux
-            Sigma
-            ((X, Tn) :: Delta)
-            ((X, TNK_Abbr) :: Theta)
-            rest
+          Ok
+            {| ec_elaboration_state :=
+                 {| es_expr_defs := Sigma;
+                    es_type_defs := (X, Tn) :: Delta;
+                    es_type_names := (X, TNK_Abbr) :: Theta |};
+               ec_core_command := None |}
       end
-  | SC_DeclCombVariant tn ctor holenames args :: rest =>
-      let ThetaResult :=
+
+  | SC_DeclCombVariant tn ctor holenames args =>
+      Theta' <-
         match lookup_type_name_kind Theta tn with
         | None => Ok ((tn, TNK_Comb) :: Theta)
         | Some TNK_Comb => Ok Theta
         | Some TNK_Abbr => Err (TypeErr_DuplicateType tn)
-        end
-      in
-      Theta' <- ThetaResult ;;
+        end ;;
       ctor' <- elaborate_type Delta Theta' ctor ;;
-      let fix elaborate_types
-          (Ts : list source_type)
-          : result (list core_type) :=
-          match Ts with
-          | [] => Ok []
-          | T :: Ts' =>
-              T' <- elaborate_type Delta Theta' T ;;
-              rest' <- elaborate_types Ts' ;;
-              Ok (T' :: rest')
-          end
-      in
-      args' <- elaborate_types args ;;
-      rest' <-
-        elaborate_prog_aux
-          Sigma
-          Delta
-          Theta'
-          rest ;;
+      args' <- elaborate_type_list Delta Theta' args ;;
       Ok
-        (CC_DeclCombVariant
-           tn
-           ctor'
-           holenames
-           args'
-         :: rest')
-  | SC_CloseCombType tn :: rest =>
+        {| ec_elaboration_state :=
+             {| es_expr_defs := Sigma;
+                es_type_defs := Delta;
+                es_type_names := Theta' |};
+           ec_core_command :=
+             Some
+               (CC_DeclCombVariant
+                  tn
+                  ctor'
+                  holenames
+                  args') |}
+
+  | SC_CloseCombType tn =>
       match lookup_type_name_kind Theta tn with
-      | Some TNK_Abbr => Err (TypeErr_CloseUnknownComb tn)
-      | None => Err (TypeErr_CloseUnknownComb tn)
       | Some TNK_Comb =>
-          match
-            elaborate_prog_aux
-              Sigma
-              Delta
-              Theta
-              rest
-          with
-          | Err e => Err e
-          | Ok rest' => Ok (CC_CloseCombType tn :: rest')
-          end
+          Ok
+            {| ec_elaboration_state := est;
+               ec_core_command := Some (CC_CloseCombType tn) |}
+      | Some TNK_Abbr =>
+          Err (TypeErr_CloseUnknownComb tn)
+      | None =>
+          Err (TypeErr_CloseUnknownComb tn)
       end
-  | SC_Eval e :: rest =>
-      match elaborate_expr Sigma Delta Theta e with
-      | Err er => Err er
-      | Ok e' =>
-          match
-            elaborate_prog_aux
-              Sigma
-              Delta
-              Theta
-              rest
-          with
-          | Err er => Err er
-          | Ok rest' => Ok (CC_Eval e' :: rest')
-          end
-      end
+
+  | SC_Eval e =>
+      e' <- elaborate_expr Sigma Delta Theta e ;;
+      Ok
+        {| ec_elaboration_state := est;
+           ec_core_command := Some (CC_Eval e') |}
   end.
 
-Definition elaborate_prog
+Fixpoint run_source_prog_aux
+    (est : elaboration_state)
+    (mst : machine_state)
     (prg : source_prog)
-  : result core_prog :=
-  elaborate_prog_aux [] [] [] prg.
+    {struct prg}
+  : result machine_state :=
+  match prg with
+  | [] =>
+      Ok mst
+  | cmd :: rest =>
+      ec <- elaborate_command est cmd ;;
+      match ec_core_command ec with
+      | None =>
+          run_source_prog_aux
+            (ec_elaboration_state ec)
+            mst
+            rest
+      | Some core_cmd =>
+          mst' <- exec_core_command mst core_cmd ;;
+          run_source_prog_aux
+            (ec_elaboration_state ec)
+            mst'
+            rest
+      end
+  end.
 
 Record Prg_Result : Type := {
   prog_type : core_type;
   prog_val : value
 }.
 
-Fixpoint run_core_prog_aux
-    (st : machine_state)
-    (prg : core_prog)
-    {struct prg}
-  : result machine_state :=
-  match prg with
-  | [] => Ok st
-  | cmd :: rest =>
-      st' <- exec_core_command st cmd ;;
-      run_core_prog_aux st' rest
-  end.
-
-Definition run_core_prog
-    (prg : core_prog)
-  : result Prg_Result :=
-  st <- run_core_prog_aux initial_state prg ;;
-  Ok
-    {| prog_type := ms_last_type st;
-       prog_val := ms_last_value st |}.
-
 Definition run_prog
     (input_program : source_prog)
   : result Prg_Result :=
-  core_program <- elaborate_prog input_program ;;
-  run_core_prog core_program.
-
+  st <-
+    run_source_prog_aux initial_elaboration_state initial_state input_program ;;
+  Ok
+    {| prog_type := ms_last_type st;
+       prog_val := ms_last_value st |}.
 
