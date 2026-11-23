@@ -164,6 +164,174 @@ Example example_good_prog10 := [
 ].
 Compute (run_prog example_good_prog10).
 
+Example norm_type_beq_unit :
+  norm_type_beq NT_Unit NT_Unit = true.
+Proof.
+  reflexivity.
+Qed.
+
+Example norm_type_beq_prod :
+  norm_type_beq
+    (NT_Prod
+      (NT_Elem "a")
+      (NT_Elem "b")
+      [])
+    (NT_Prod
+      (NT_Elem "a")
+      (NT_Elem "b")
+      [])
+  = true.
+Proof.
+  reflexivity.
+Qed.
+
+Example norm_type_beq_prod_order :
+  norm_type_beq
+    (NT_Prod
+      (NT_Elem "a")
+      (NT_Elem "b")
+      [])
+    (NT_Prod
+      (NT_Elem "b")
+      (NT_Elem "a")
+      [])
+  = false.
+Proof.
+  reflexivity.
+Qed.
+
+Example normal_type_hole_detected :
+  norm_type_contains_hole
+    (NT_Comb "Box" [NT_Hole "A"])
+  = true.
+Proof.
+  reflexivity.
+Qed.
+
+Example normal_type_without_holes :
+  norm_type_contains_hole
+    (NT_Prod
+      (NT_Elem "a")
+      (NT_Elem "b")
+      [])
+  = false.
+Proof.
+  reflexivity.
+Qed.
+
+Example duplicate_normal_map_key :
+  find_duplicate_map_key
+    []
+    [(NT_Unit, NT_Elem "v1");
+     (NT_Unit, NT_Elem "v2")]
+  =
+  Some NT_Unit.
+Proof.
+  reflexivity.
+Qed.
+
+Example unify_normal_hole :
+  unify_norm_type
+    []
+    (NT_Hole "X")
+    (NT_Elem "value")
+  =
+  Ok [("X", NT_Elem "value")].
+Proof.
+  reflexivity.
+Qed.
+
+Example unify_normal_bound_hole :
+  unify_norm_type
+    [("X", NT_Elem "value")]
+    (NT_Hole "X")
+    (NT_Elem "value")
+  =
+  Ok [("X", NT_Elem "value")].
+Proof.
+  reflexivity.
+Qed.
+
+Example unify_normal_bound_hole_mismatch :
+  unify_norm_type
+    [("X", NT_Elem "first")]
+    (NT_Hole "X")
+    (NT_Elem "second")
+  =
+  Err
+    (TypeErr_Mismatch
+      (NT_Elem "first")
+      (NT_Elem "second")).
+Proof.
+  reflexivity.
+Qed.
+
+Example unify_rejects_hole_in_actual :
+  unify_norm_type
+    []
+    (NT_Hole "X")
+    (NT_Comb "Box" [NT_Hole "Y"])
+  =
+  Err
+    (TypeErr_UseHole
+      (NT_Comb "Box" [NT_Hole "Y"])).
+Proof.
+  reflexivity.
+Qed.
+
+Example unify_normal_products :
+  unify_norm_type
+    []
+    (NT_Prod
+      (NT_Hole "X")
+      (NT_Elem "b")
+      [])
+    (NT_Prod
+      (NT_Elem "a")
+      (NT_Elem "b")
+      [])
+  =
+  Ok [("X", NT_Elem "a")].
+Proof.
+  reflexivity.
+Qed.
+
+Example unify_normal_comb_argument_count_mismatch :
+  unify_norm_type
+    []
+    (NT_Comb
+      "Pair"
+      [NT_Hole "A";
+       NT_Hole "B"])
+    (NT_Comb
+      "Pair"
+      [NT_Elem "a"])
+  =
+  Err
+    (TypeErr_ListMismatch
+      [NT_Hole "A"; NT_Hole "B"]
+      [NT_Elem "a"]).
+Proof.
+  reflexivity.
+Qed.
+
+Example unify_normal_map_permutation :
+  unify_norm_type
+    []
+    (NT_Map
+      [(NT_Elem "k1", NT_Hole "X");
+       (NT_Elem "k2", NT_Hole "Y")])
+    (NT_Map
+      [(NT_Elem "k2", NT_Elem "v2");
+       (NT_Elem "k1", NT_Elem "v1")])
+  =
+  Ok
+    [("Y", NT_Elem "v2");
+     ("X", NT_Elem "v1")].
+Proof.
+  reflexivity.
+Qed.
+
 Definition elaborate_prog (prg : source_prog) : result core_prog :=
   let fix elaborate_commands
       (est : elaboration_state)
@@ -511,20 +679,20 @@ Proof.
 Qed.
 
 Example unify_map_empty :
-  unify_core_type []
-    (CT_Map [])
-    (CT_Map []) =
+  unify_norm_type []
+    (NT_Map [])
+    (NT_Map []) =
   Ok [].
 Proof.
   reflexivity.
 Qed.
 
 Example unify_empty_map_pattern :
-  unify_core_type []
-    (CT_Map [])
-    (CT_Map
-       [(CT_Elem "key1", CT_Elem "value1");
-        (CT_Elem "key2", CT_Elem "value2")]) =
+  unify_norm_type []
+    (NT_Map [])
+    (NT_Map
+       [(NT_Elem "key1", NT_Elem "value1");
+        (NT_Elem "key2", NT_Elem "value2")]) =
   Ok [].
 Proof.
   reflexivity.
@@ -532,9 +700,9 @@ Qed.
 
 Example valid_map_pattern_ok :
   validate_map_pattern_keys
-    (CT_Map
-       [(CT_Elem "key1", CT_Hole "V1");
-        (CT_Elem "key2", CT_Hole "V2")]) =
+    (NT_Map
+       [(NT_Elem "key1", NT_Hole "V1");
+        (NT_Elem "key2", NT_Hole "V2")]) =
   Ok tt.
 Proof.
   reflexivity.
@@ -542,317 +710,194 @@ Qed.
 
 Example invalid_duplicate_map_pattern_key :
   validate_map_pattern_keys
-    (CT_Map
-       [(CT_Elem "key", CT_Hole "V1");
-        (CT_Elem "key", CT_Hole "V2")]) =
+    (NT_Map
+       [(NT_Elem "key", NT_Hole "V1");
+        (NT_Elem "key", NT_Hole "V2")]) =
   Err
     (TypeErr_DuplicateMapPatternKey
-       (CT_Elem "key")).
+       (NT_Elem "key")).
 Proof.
   reflexivity.
 Qed.
 
 Example invalid_hole_in_map_pattern_key :
   validate_map_pattern_keys
-    (CT_Map
-       [(CT_Hole "K", CT_Hole "V")]) =
+    (NT_Map
+       [(NT_Hole "K", NT_Hole "V")]) =
   Err
     (TypeErr_HoleInMapPatternKey
-       (CT_Hole "K")).
+       (NT_Hole "K")).
 Proof.
   reflexivity.
 Qed.
 
 Example invalid_nested_duplicate_map_pattern_key :
   validate_map_pattern_keys
-    (CT_Map
-       [(CT_Elem "outer",
-         CT_Map
-           [(CT_Elem "inner", CT_Hole "V1");
-            (CT_Elem "inner", CT_Hole "V2")])]) =
+    (NT_Map
+       [(NT_Elem "outer",
+         NT_Map
+           [(NT_Elem "inner", NT_Hole "V1");
+            (NT_Elem "inner", NT_Hole "V2")])]) =
   Err
     (TypeErr_DuplicateMapPatternKey
-       (CT_Elem "inner")).
+       (NT_Elem "inner")).
 Proof.
   reflexivity.
 Qed.
 
 Example unify_map_rejects_hole_in_key :
-  unify_core_type []
-    (CT_Map
-       [(CT_Hole "K", CT_Hole "V")])
-    (CT_Map
-       [(CT_Elem "key", CT_Elem "value");
-        (CT_Elem "key2", CT_Elem "val")]) =
+  unify_norm_type []
+    (NT_Map
+       [(NT_Hole "K", NT_Hole "V")])
+    (NT_Map
+       [(NT_Elem "key", NT_Elem "value");
+        (NT_Elem "key2", NT_Elem "val")]) =
   Err
     (TypeErr_HoleInMapPatternKey
-       (CT_Hole "K")).
+       (NT_Hole "K")).
 Proof.
   reflexivity.
 Qed.
 
 Example unify_map_rejects_nested_hole_in_key :
-  unify_core_type []
-    (CT_Map
-       [(CT_Prod
-           [CT_Elem "prefix";
-            CT_Hole "K"],
-         CT_Hole "V")])
-    (CT_Map
-       [(CT_Prod
-           [CT_Elem "prefix";
-            CT_Elem "key"],
-         CT_Elem "value")]) =
+  unify_norm_type []
+    (NT_Map
+       [(NT_Prod (NT_Elem "prefix") (NT_Hole "K") [],
+         NT_Hole "V")])
+    (NT_Map
+       [(NT_Prod (NT_Elem "prefix") (NT_Elem "key") [],
+         NT_Elem "value")]) =
   Err
     (TypeErr_HoleInMapPatternKey
-       (CT_Prod
-          [CT_Elem "prefix";
-           CT_Hole "K"])).
+       (NT_Prod (NT_Elem "prefix") (NT_Hole "K") [])).
 Proof.
   reflexivity.
 Qed.
 
-
 Example unify_map_permuted :
-  unify_core_type []
-    (CT_Map
-       [(CT_Elem "key1", CT_Hole "V1");
-        (CT_Elem "key2", CT_Hole "V2")])
-    (CT_Map
-       [(CT_Elem "key2", CT_Prim Prm_Right);
-        (CT_Elem "key3", CT_Elem "unused");
-        (CT_Elem "key1", CT_Prim Prm_Left)]) =
+  unify_norm_type []
+    (NT_Map
+       [(NT_Elem "key1", NT_Hole "V1");
+        (NT_Elem "key2", NT_Hole "V2")])
+    (NT_Map
+       [(NT_Elem "key2", NT_Prim Prm_Right);
+        (NT_Elem "key3", NT_Elem "unused");
+        (NT_Elem "key1", NT_Prim Prm_Left)]) =
   Ok
-    [("V2", CT_Prim Prm_Right);
-     ("V1", CT_Prim Prm_Left)].
+    [("V2", NT_Prim Prm_Right);
+     ("V1", NT_Prim Prm_Left)].
 Proof.
   reflexivity.
 Qed.
 
 Example unify_map_concrete_key :
-  unify_core_type []
-    (CT_Map
-       [(CT_Elem "key", CT_Hole "V")])
-    (CT_Map
-       [(CT_Elem "key", CT_Elem "value");
-        (CT_Elem "key2", CT_Elem "val")]) =
+  unify_norm_type []
+    (NT_Map
+       [(NT_Elem "key", NT_Hole "V")])
+    (NT_Map
+       [(NT_Elem "key", NT_Elem "value");
+        (NT_Elem "key2", NT_Elem "val")]) =
   Ok
-    [("V", CT_Elem "value")].
+    [("V", NT_Elem "value")].
 Proof.
   reflexivity.
 Qed.
 
 Example unify_map_shared_value_hole :
-  unify_core_type []
-    (CT_Map
-       [(CT_Elem "key1", CT_Hole "V");
-        (CT_Elem "key2", CT_Hole "V")])
-    (CT_Map
-       [(CT_Elem "key2", CT_Prim Prm_Left);
-        (CT_Elem "key1", CT_Prim Prm_Left)]) =
+  unify_norm_type []
+    (NT_Map
+       [(NT_Elem "key1", NT_Hole "V");
+        (NT_Elem "key2", NT_Hole "V")])
+    (NT_Map
+       [(NT_Elem "key2", NT_Prim Prm_Left);
+        (NT_Elem "key1", NT_Prim Prm_Left)]) =
   Ok
-    [("V", CT_Prim Prm_Left)].
+    [("V", NT_Prim Prm_Left)].
 Proof.
   reflexivity.
 Qed.
 
 Example unify_map_different_lengths :
-  unify_core_type []
-    (CT_Map
-       [(CT_Elem "a", CT_Hole "X")])
-    (CT_Map
-       [(CT_Elem "a", CT_Prim Prm_Left);
-        (CT_Elem "b", CT_Prim Prm_Right)]) =
-  Ok [("X", CT_Prim Prm_Left)].
+  unify_norm_type []
+    (NT_Map
+       [(NT_Elem "a", NT_Hole "X")])
+    (NT_Map
+       [(NT_Elem "a", NT_Prim Prm_Left);
+        (NT_Elem "b", NT_Prim Prm_Right)]) =
+  Ok [("X", NT_Prim Prm_Left)].
 Proof.
   reflexivity.
 Qed.
 
 Example unify_map_inconsistent_value_hole :
-  unify_core_type []
-    (CT_Map
-       [(CT_Elem "key1", CT_Hole "V");
-        (CT_Elem "key2", CT_Hole "V")])
-    (CT_Map
-       [(CT_Elem "key1", CT_Prim Prm_Left);
-        (CT_Elem "key2", CT_Prim Prm_Right)]) =
+  unify_norm_type []
+    (NT_Map
+       [(NT_Elem "key1", NT_Hole "V");
+        (NT_Elem "key2", NT_Hole "V")])
+    (NT_Map
+       [(NT_Elem "key1", NT_Prim Prm_Left);
+        (NT_Elem "key2", NT_Prim Prm_Right)]) =
   Err
     (TypeErr_Mismatch
-       (CT_Prim Prm_Left)
-       (CT_Prim Prm_Right)).
+       (NT_Prim Prm_Left)
+       (NT_Prim Prm_Right)).
 Proof.
   reflexivity.
 Qed.
 
 Example unify_map_missing_key :
-  unify_core_type []
-    (CT_Map
-       [(CT_Elem "missing", CT_Hole "V")])
-    (CT_Map
-       [(CT_Elem "key", CT_Elem "value")]) =
+  unify_norm_type []
+    (NT_Map
+       [(NT_Elem "missing", NT_Hole "V")])
+    (NT_Map
+       [(NT_Elem "key", NT_Elem "value")]) =
   Err
     (TypeErr_Mismatch
-       (CT_Map
-          [(CT_Elem "missing", CT_Hole "V")])
-       (CT_Map
-          [(CT_Elem "key", CT_Elem "value")])).
+       (NT_Map
+          [(NT_Elem "missing", NT_Hole "V")])
+       (NT_Map
+          [(NT_Elem "key", NT_Elem "value")])).
 Proof.
   reflexivity.
 Qed.
 
 Example core_type_beq_map_permutation :
-  core_type_beq
-    (CT_Map
-       [(CT_Elem "K1", CT_Elem "V1");
-        (CT_Elem "K2", CT_Elem "V2")])
-    (CT_Map
-       [(CT_Elem "K2", CT_Elem "V2");
-        (CT_Elem "K1", CT_Elem "V1")])
+  norm_type_beq
+    (NT_Map
+       [(NT_Elem "K1", NT_Elem "V1");
+        (NT_Elem "K2", NT_Elem "V2")])
+    (NT_Map
+       [(NT_Elem "K2", NT_Elem "V2");
+        (NT_Elem "K1", NT_Elem "V1")])
   = true.
 Proof.
   reflexivity.
 Qed.
 
 Example core_type_beq_map_different_values :
-  core_type_beq
-    (CT_Map
-       [(CT_Elem "K1", CT_Elem "V1");
-        (CT_Elem "K2", CT_Elem "V2")])
-    (CT_Map
-       [(CT_Elem "K2", CT_Elem "X");
-        (CT_Elem "K1", CT_Elem "V1")])
+  norm_type_beq
+    (NT_Map
+       [(NT_Elem "K1", NT_Elem "V1");
+        (NT_Elem "K2", NT_Elem "V2")])
+    (NT_Map
+       [(NT_Elem "K2", NT_Elem "X");
+        (NT_Elem "K1", NT_Elem "V1")])
   = false.
 Proof.
   reflexivity.
 Qed.
 
 Example core_type_beq_map_different_lengths :
-  core_type_beq
-    (CT_Map
-       [(CT_Elem "K1", CT_Elem "V1")])
-    (CT_Map
-       [(CT_Elem "K1", CT_Elem "V1");
-        (CT_Elem "K2", CT_Elem "V2")])
+  norm_type_beq
+    (NT_Map
+       [(NT_Elem "K1", NT_Elem "V1")])
+    (NT_Map
+       [(NT_Elem "K1", NT_Elem "V1");
+        (NT_Elem "K2", NT_Elem "V2")])
   = false.
 Proof.
   reflexivity.
 Qed.
-
-Example expr_beq_map_permutation :
-  core_expr_beq
-    (CE_Map
-       [(CE_Elem "K1", CE_Elem "V1");
-        (CE_Elem "K2", CE_Elem "V2")])
-    (CE_Map
-       [(CE_Elem "K2", CE_Elem "V2");
-        (CE_Elem "K1", CE_Elem "V1")])
-  = true.
-Proof.
-  reflexivity.
-Qed.
-
-Example expr_beq_map_same_keys_different_values :
-  core_expr_beq
-    (CE_Map
-       [(CE_Elem "K1", CE_Elem "V1");
-        (CE_Elem "K2", CE_Elem "V2")])
-    (CE_Map
-       [(CE_Elem "K2", CE_Elem "X");
-        (CE_Elem "K1", CE_Elem "V1")])
-  = false.
-Proof.
-  reflexivity.
-Qed.
-
-Example expr_beq_map_different_keys :
-  core_expr_beq
-    (CE_Map
-       [(CE_Elem "K1", CE_Elem "V1");
-        (CE_Elem "K2", CE_Elem "V2")])
-    (CE_Map
-       [(CE_Elem "K3", CE_Elem "V2");
-        (CE_Elem "K1", CE_Elem "V1")])
-  = false.
-Proof.
-  reflexivity.
-Qed.
-
-Example expr_beq_map_different_lengths :
-  core_expr_beq
-    (CE_Map
-       [(CE_Elem "K1", CE_Elem "V1")])
-    (CE_Map
-       [(CE_Elem "K1", CE_Elem "V1");
-        (CE_Elem "K2", CE_Elem "V2")])
-  = false.
-Proof.
-  reflexivity.
-Qed.
-
-Example expr_beq_map_nested_permutation :
-  core_expr_beq
-    (CE_Map
-       [(CE_Elem "outer",
-         CE_Map
-           [(CE_Elem "K1", CE_Elem "V1");
-            (CE_Elem "K2", CE_Elem "V2")])])
-    (CE_Map
-       [(CE_Elem "outer",
-         CE_Map
-           [(CE_Elem "K2", CE_Elem "V2");
-            (CE_Elem "K1", CE_Elem "V1")])])
-  = true.
-Proof.
-  reflexivity.
-Qed.
-
-Example expr_beq_map_entry_permutation_and_nested_permutation :
-  core_expr_beq
-    (CE_Map
-       [(CE_Elem "A",
-         CE_Map
-           [(CE_Elem "K1", CE_Elem "V1");
-            (CE_Elem "K2", CE_Elem "V2")]);
-        (CE_Elem "B", CE_Elem "VB")])
-    (CE_Map
-       [(CE_Elem "B", CE_Elem "VB");
-        (CE_Elem "A",
-         CE_Map
-           [(CE_Elem "K2", CE_Elem "V2");
-            (CE_Elem "K1", CE_Elem "V1")])])
-  = true.
-Proof.
-  reflexivity.
-Qed.
-
-Example expr_beq_map_duplicate_multiplicity_equal :
-  core_expr_beq
-    (CE_Map
-       [(CE_Elem "K", CE_Elem "V");
-        (CE_Elem "K", CE_Elem "V");
-        (CE_Elem "X", CE_Elem "Y")])
-    (CE_Map
-       [(CE_Elem "X", CE_Elem "Y");
-        (CE_Elem "K", CE_Elem "V");
-        (CE_Elem "K", CE_Elem "V")])
-  = true.
-Proof.
-  reflexivity.
-Qed.
-
-Example expr_beq_map_duplicate_multiplicity_different :
-  core_expr_beq
-    (CE_Map
-       [(CE_Elem "K", CE_Elem "V");
-        (CE_Elem "K", CE_Elem "V")])
-    (CE_Map
-       [(CE_Elem "K", CE_Elem "V");
-        (CE_Elem "X", CE_Elem "Y")])
-  = false.
-Proof.
-  reflexivity.
-Qed.
-
 
 Example value_beq_map_permutation :
   value_beq
@@ -969,31 +1014,16 @@ Proof.
   reflexivity.
 Qed.
 
-Example expr_beq_trep_map_permutation :
-  core_expr_beq
-    (CE_TRep
-       (CT_Map
-          [(CT_Elem "K1", CT_Elem "V1");
-           (CT_Elem "K2", CT_Elem "V2")]))
-    (CE_TRep
-       (CT_Map
-          [(CT_Elem "K2", CT_Elem "V2");
-           (CT_Elem "K1", CT_Elem "V1")]))
-  = true.
-Proof.
-  reflexivity.
-Qed.
-
 Example value_beq_trep_map_permutation :
   value_beq
     (V_TRep
-       (CT_Map
-          [(CT_Elem "K1", CT_Elem "V1");
-           (CT_Elem "K2", CT_Elem "V2")]))
+       (NT_Map
+          [(NT_Elem "K1", NT_Elem "V1");
+           (NT_Elem "K2", NT_Elem "V2")]))
     (V_TRep
-       (CT_Map
-          [(CT_Elem "K2", CT_Elem "V2");
-           (CT_Elem "K1", CT_Elem "V1")]))
+       (NT_Map
+          [(NT_Elem "K2", NT_Elem "V2");
+           (NT_Elem "K1", NT_Elem "V1")]))
   = true.
 Proof.
   reflexivity.
@@ -1007,7 +1037,7 @@ Example infer_map_duplicate_key_test :
        [(CE_Elem "a", CE_Elem "1");
         (CE_Elem "a", CE_Elem "2")])
   =
-  Err (TypeErr_DuplicateMapKey (CT_Elem "a")).
+  Err (TypeErr_DuplicateMapKey (NT_Elem "a")).
 Proof.
   reflexivity.
 Qed.
@@ -1031,10 +1061,10 @@ Example map_expr : core_expr :=
 Example infer_map_expr_test :
   infer_type_core_expr [] map_expr =
   Ok
-    (CT_Map
-       [(CT_Elem "a", CT_Elem "1");
-        (CT_Elem "b",
-         CT_Prod [CT_Elem "x"; CT_Elem "y"])]).
+    (NT_Map
+       [(NT_Elem "a", NT_Elem "1");
+        (NT_Elem "b",
+         NT_Prod (NT_Elem "x") (NT_Elem "y") [])]).
 Proof.
   reflexivity.
 Qed.
@@ -1051,49 +1081,39 @@ Proof.
 Qed.
 
 Example unify_generic_list
-    (plst arglst : list core_type)
-  : result (list core_type) :=
-  match unify_core_type_list [] plst arglst with
+    (plst arglst : list norm_type)
+  : result (list norm_type) :=
+  match unify_norm_type_list [] plst arglst with
   | Ok _ => Ok arglst
   | Err e => Err e
   end.
 
 Example test_unify_nested_prod :
   unify_generic_list
-    [CT_Prod [
-       CT_Hole "a";
-       CT_Elem "x"
-    ]]
-    [CT_Prod [
-       CT_Elem "Nat";
-       CT_Elem "x"
-    ]]
+    [NT_Prod (NT_Hole "a") (NT_Elem "x") [] ]
+    [NT_Prod (NT_Elem "Nat") (NT_Elem "x") [] ]
   =
   Ok [
-    CT_Prod [
-      CT_Elem "Nat";
-      CT_Elem "x"
-    ]
+    NT_Prod (NT_Elem "Nat") (NT_Elem "x") []
   ].
 Proof.
   reflexivity.
 Qed.
 
-
 Example test_unify_repeated_nested_hole :
   unify_generic_list
     [
-      CT_Hole "a";
-      CT_Comb "Option" [CT_Hole "a"]
+      NT_Hole "a";
+      NT_Comb "Option" [NT_Hole "a"]
     ]
     [
-      CT_Elem "Nat";
-      CT_Comb "Option" [CT_Elem "Nat"]
+      NT_Elem "Nat";
+      NT_Comb "Option" [NT_Elem "Nat"]
     ]
   =
   Ok [
-    CT_Elem "Nat";
-    CT_Comb "Option" [CT_Elem "Nat"]
+    NT_Elem "Nat";
+    NT_Comb "Option" [NT_Elem "Nat"]
   ].
 Proof.
   reflexivity.
@@ -1102,31 +1122,31 @@ Qed.
 Example test_unify_repeated_nested_hole_error :
   unify_generic_list
     [
-      CT_Hole "a";
-      CT_Comb "Option" [CT_Hole "a"]
+      NT_Hole "a";
+      NT_Comb "Option" [NT_Hole "a"]
     ]
     [
-      CT_Elem "Nat";
-      CT_Comb "Option" [CT_Elem "Bool"]
+      NT_Elem "Nat";
+      NT_Comb "Option" [NT_Elem "Bool"]
     ]
   =
   Err
     (TypeErr_Mismatch
-       (CT_Elem "Nat")
-       (CT_Elem "Bool")).
+       (NT_Elem "Nat")
+       (NT_Elem "Bool")).
 Proof.
   reflexivity.
 Qed.
 
 Example test_unify_different_comb_names :
   unify_generic_list
-    [CT_Comb "Option" [CT_Hole "a"]]
-    [CT_Comb "List" [CT_Elem "Nat"]]
+    [NT_Comb "Option" [NT_Hole "a"]]
+    [NT_Comb "List" [NT_Elem "Nat"]]
   =
   Err
     (TypeErr_Mismatch
-       (CT_Comb "Option" [CT_Hole "a"])
-       (CT_Comb "List" [CT_Elem "Nat"])).
+       (NT_Comb "Option" [NT_Hole "a"])
+       (NT_Comb "List" [NT_Elem "Nat"])).
 Proof.
   reflexivity.
 Qed.
@@ -1134,23 +1154,16 @@ Qed.
 Example test_unify_product_length_error :
   unify_generic_list
     [
-      CT_Prod [
-        CT_Hole "a";
-        CT_Hole "b";
-        CT_Hole "c"
-      ]
+      NT_Prod (NT_Hole "a") (NT_Hole "b") [NT_Hole "c"]
     ]
     [
-      CT_Prod [
-        CT_Elem "Nat";
-        CT_Elem "Nat2"
-      ]
+      NT_Prod (NT_Elem "Nat") (NT_Elem "Nat2") []
     ]
   =
   Err
     (TypeErr_ListMismatch
-       [CT_Hole "a"; CT_Hole "b"; CT_Hole "c"]
-       [CT_Elem "Nat"; CT_Elem "Nat2"]).
+       [NT_Hole "a"; NT_Hole "b"; NT_Hole "c"]
+       [NT_Elem "Nat"; NT_Elem "Nat2"]).
 Proof.
   reflexivity.
 Qed.
