@@ -1081,12 +1081,12 @@ Proof.
 Qed.
 
 Example eval_map_duplicate_key_test :
-  eval_core_expr
+  eval_typed_core_expr []
     (CE_Map
        [(CE_Elem "a", CE_Elem "1");
         (CE_Elem "a", CE_Elem "2")])
   =
-  Err (ExprErr_DuplicateMapKey (CE_Elem "a")).
+  Err (TypeErr_DuplicateMapKey (NT_Elem "a")).
 Proof.
   reflexivity.
 Qed.

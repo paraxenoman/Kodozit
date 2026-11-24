@@ -972,15 +972,6 @@ Definition infer_type_app
       Err (TypeErr_InvalidApp aty bty)
   end.
 
-Fixpoint value_key_mem
-    (key : value)
-    (keys : list value)
-  : bool :=
-  match keys with
-  | [] => false
-  | key' :: rest => value_beq key key' || value_key_mem key rest
-  end.
-
 Fixpoint infer_type_core_expr
     (Gamma : type_context)
     (tm : core_expr)
@@ -1092,28 +1083,21 @@ Fixpoint eval_core_expr
       arg_values <- eval_core_expr_list eval_core_expr args ;;
       Ok (V_Comb ctor_value arg_values)
   | CE_Map entries =>
-      let fix eval_map_entries
-          (seen_keys : list value)
-          (xs : list (core_expr * core_expr))
-          : result (list (value * value)) :=
-          match xs with
-          | [] => Ok []
-          | (key_expr, val_expr) :: rest =>
-              key_value <- eval_core_expr key_expr ;;
-              if value_key_mem key_value seen_keys then
-                Err (ExprErr_DuplicateMapKey key_expr)
-              else
-                val_value <- eval_core_expr val_expr ;;
-                rest_values <- eval_map_entries (key_value :: seen_keys) rest ;;
-                Ok ((key_value, val_value) :: rest_values)
-          end
-      in
-      match eval_map_entries [] entries with
-      | Err e =>
-          Err e
-      | Ok values =>
-          Ok (V_Map values)
+    let fix eval_map_entries
+        (xs : list (core_expr * core_expr))
+      : result (list (value * value)) :=
+      match xs with
+      | [] =>
+          Ok []
+      | (key_expr, val_expr) :: rest =>
+          key_value <- eval_core_expr key_expr ;;
+          val_value <- eval_core_expr val_expr ;;
+          rest_values <- eval_map_entries rest ;;
+          Ok ((key_value, val_value) :: rest_values)
       end
+    in
+    values <- eval_map_entries entries ;;
+    Ok (V_Map values)
   | CE_App a b =>
       match eval_core_expr a with
       | Err e => Err e
@@ -1139,6 +1123,14 @@ Fixpoint eval_core_expr
           end
       end
   end.
+
+Definition eval_typed_core_expr
+    (Gamma : type_context)
+    (tm : core_expr)
+  : result (norm_type * value) :=
+  T <- infer_type_core_expr Gamma tm ;;
+  v <- eval_core_expr tm ;;
+  Ok (T, v).
 
 Fixpoint norm_type_contains_named_hole
     (X : string)
@@ -1308,12 +1300,12 @@ Definition exec_core_command
               end
         end
   | CC_Eval e =>
-      T <- infer_type_core_expr Gamma e ;;
-      v <- eval_core_expr e ;;
-      Ok
-        {| ms_type_ctx := Gamma;
-           ms_last_type := T;
-           ms_last_value := v |}
+    Tv <- eval_typed_core_expr Gamma e ;;
+    let '(T, v) := Tv in
+    Ok
+      {| ms_type_ctx := Gamma;
+         ms_last_type := T;
+         ms_last_value := v |}
   | CC_CloseCombType tn =>
       if negb (comb_type_declared Gamma tn) then
         Err (TypeErr_CloseUnknownComb tn)
