@@ -1057,80 +1057,77 @@ Fixpoint infer_type_core_expr
       end
   end. 
 
-Fixpoint eval_core_expr
-    (tm : core_expr)
-    {struct tm}
-  : result value :=
-  match tm with
-  | CE_Elem e => Ok (V_Elem e)
-  | CE_Prim p => Ok (V_Prim p)
-  | CE_TRep T =>
-      TN <- normalize_core_type T ;;
-      if norm_type_contains_hole TN then
-        Err (ExprErr_UseHole tm)
-      else
-        Ok (V_TRep TN)
-  | CE_Prod es =>
-      match es with
-      | [] => Ok V_Unit
-      | [e] => Err (ExprErr_InvalidProd tm)
-      | _ =>
-          vs <- eval_core_expr_list eval_core_expr es ;;
-          Ok (V_Prod vs)
-      end
-  | CE_Comb ctor args =>
-      ctor_value <- eval_core_expr ctor ;;
-      arg_values <- eval_core_expr_list eval_core_expr args ;;
-      Ok (V_Comb ctor_value arg_values)
-  | CE_Map entries =>
-    let fix eval_map_entries
-        (xs : list (core_expr * core_expr))
-      : result (list (value * value)) :=
-      match xs with
-      | [] =>
-          Ok []
-      | (key_expr, val_expr) :: rest =>
-          key_value <- eval_core_expr key_expr ;;
-          val_value <- eval_core_expr val_expr ;;
-          rest_values <- eval_map_entries rest ;;
-          Ok ((key_value, val_value) :: rest_values)
-      end
-    in
-    values <- eval_map_entries entries ;;
-    Ok (V_Map values)
-  | CE_App a b =>
-      match eval_core_expr a with
-      | Err e => Err e
-      | Ok va =>
-          match eval_core_expr b with
-          | Err e => Err e
-          | Ok vb =>
-              match va, vb with
-              | V_Prod [], V_Prim _ =>
-                  Err (ExprErr_InvalidApp a b)
-              | V_Prod (x :: _), V_Prim Prm_Left => Ok x
-              | V_Prod xs, V_Prim Prm_Right =>
-                  Ok (last xs V_Unit)
-              | V_Comb ctor _, V_Prim Prm_Left => Ok ctor
-              | V_Comb _ args, V_Prim Prm_Right =>
-                  match args with
-                  | [] => Ok V_Unit
-                  | [x] => Ok x
-                  | xs => Ok (V_Prod xs)
-                  end
-              | _, _ => Err (ExprErr_InvalidApp a b)
-              end
-          end
-      end
-  end.
-
 Definition eval_typed_core_expr
     (Gamma : type_context)
     (tm : core_expr)
   : result (norm_type * value) :=
-  T <- infer_type_core_expr Gamma tm ;;
-  v <- eval_core_expr tm ;;
-  Ok (T, v).
+    let fix eval_core_expr (tm : core_expr) {struct tm} : result value :=
+        match tm with
+        | CE_Elem e => Ok (V_Elem e)
+        | CE_Prim p => Ok (V_Prim p)
+        | CE_TRep T =>
+          TN <- normalize_core_type T ;;
+          if norm_type_contains_hole TN then
+            Err (ExprErr_UseHole tm)
+          else
+            Ok (V_TRep TN)
+        | CE_Prod es =>
+          match es with
+          | [] => Ok V_Unit
+          | [e] => Err (ExprErr_InvalidProd tm)
+          | _ =>
+              vs <- eval_core_expr_list eval_core_expr es ;;
+              Ok (V_Prod vs)
+          end
+        | CE_Comb ctor args =>
+          ctor_value <- eval_core_expr ctor ;;
+          arg_values <- eval_core_expr_list eval_core_expr args ;;
+          Ok (V_Comb ctor_value arg_values)
+        | CE_Map entries =>
+            let fix eval_map_entries
+                (xs : list (core_expr * core_expr))
+              : result (list (value * value)) :=
+              match xs with
+              | [] =>
+                  Ok []
+              | (key_expr, val_expr) :: rest =>
+                  key_value <- eval_core_expr key_expr ;;
+                  val_value <- eval_core_expr val_expr ;;
+                  rest_values <- eval_map_entries rest ;;
+                  Ok ((key_value, val_value) :: rest_values)
+              end
+            in
+            values <- eval_map_entries entries ;;
+            Ok (V_Map values)
+        | CE_App a b =>
+          match eval_core_expr a with
+          | Err e => Err e
+          | Ok va =>
+              match eval_core_expr b with
+              | Err e => Err e
+              | Ok vb =>
+                  match va, vb with
+                  | V_Prod [], V_Prim _ =>
+                      Err (ExprErr_InvalidApp a b)
+                  | V_Prod (x :: _), V_Prim Prm_Left => Ok x
+                  | V_Prod xs, V_Prim Prm_Right =>
+                      Ok (last xs V_Unit)
+                  | V_Comb ctor _, V_Prim Prm_Left => Ok ctor
+                  | V_Comb _ args, V_Prim Prm_Right =>
+                      match args with
+                      | [] => Ok V_Unit
+                      | [x] => Ok x
+                      | xs => Ok (V_Prod xs)
+                      end
+                  | _, _ => Err (ExprErr_InvalidApp a b)
+                  end
+              end
+          end
+        end
+    in
+    T <- infer_type_core_expr Gamma tm ;;
+    v <- eval_core_expr tm ;;
+    Ok (T, v).
 
 Fixpoint norm_type_contains_named_hole
     (X : string)

@@ -185,11 +185,11 @@ Example infer_binary_prod_right :
 Proof. reflexivity. Qed.
 
 Example eval_binary_prod_right :
-  eval_core_expr
+  eval_typed_core_expr []
     (CE_App
       (CE_Prod [CE_Elem "a"; CE_Elem "b"])
       (CE_Prim Prm_Right))
-  = Ok (V_Elem "b").
+  = Ok (NT_Elem "b", V_Elem "b").
 Proof. reflexivity. Qed.
 
 Example invalid_prod_with_one_member : 
@@ -1108,12 +1108,12 @@ Proof.
 Qed.
 
 Example eval_map_expr_test :
-  eval_core_expr map_expr =
+  eval_typed_core_expr [] map_expr 
+  =
   Ok
-    (V_Map
-       [(V_Elem "a", V_Elem "1");
-        (V_Elem "b",
-         V_Prod [V_Elem "x"; V_Elem "y"])]).
+ (NT_Map
+    [(NT_Elem "a", NT_Elem "1"); (NT_Elem "b", NT_Prod (NT_Elem "x") (NT_Elem "y") [])],
+  V_Map [(V_Elem "a", V_Elem "1"); (V_Elem "b", V_Prod [V_Elem "x"; V_Elem "y"])]).
 Proof.
   reflexivity.
 Qed.
