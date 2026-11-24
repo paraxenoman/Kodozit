@@ -215,6 +215,31 @@ Instance Monad_result : Monad result :=
       end
 }.
 
+Fixpoint map_result 
+    {I R: Type}
+    (f : I -> result R)
+    (Ts : list I)
+    : result (list R) :=
+  match Ts with
+  | [] => Ok []
+  | T1 :: rest =>
+      T1' <- f T1 ;;
+      rest' <- map_result f rest ;;
+      Ok (T1' :: rest')
+  end.
+
+Fixpoint validate_list
+      {A : Type}
+      (f : A -> result unit)
+      (Ts : list A)
+    : result unit :=
+    match Ts with
+    | [] => Ok tt
+    | T1 :: rest =>
+        _ <- f T1 ;;
+        validate_list f rest
+    end.
+
 Inductive TypeBinding : Type :=
   | BindCombType : TypeName -> norm_type -> list string -> list norm_type -> TypeBinding
   | CloseCombType : TypeName -> TypeBinding.
@@ -224,6 +249,9 @@ Definition type_context : Type := list TypeBinding.
 Fixpoint erase_norm_type
     (T : norm_type)
   : core_type :=
+  let fix erase_norm_type_pair (p : (norm_type * norm_type))
+    : (core_type * core_type) := (erase_norm_type (fst p), erase_norm_type (snd p))
+  in
   match T with
   | NT_Hole X => CT_Hole X
   | NT_Elem e => CT_Elem e
@@ -232,40 +260,8 @@ Fixpoint erase_norm_type
   | NT_Unit => CT_Prod []
   | NT_Prod T1 T2 rest => CT_Prod (map erase_norm_type (T1 :: T2 :: rest))
   | NT_Comb tn Ts => CT_Comb tn (map erase_norm_type Ts)
-  | NT_Map entries =>
-      CT_Map
-        (map
-          (fun entry =>
-             let '(K, V) := entry in
-             (erase_norm_type K,
-              erase_norm_type V))
-          entries)
+  | NT_Map entries => CT_Map (map erase_norm_type_pair entries)
   end.
-
-Definition erase_norm_type_pair (p : (norm_type * norm_type))
- : (core_type * core_type) :=
- (erase_norm_type (fst p), erase_norm_type (snd p)).
-
-Definition erase_norm_type_pair_list
-    (Ts : list (norm_type * norm_type))
-  : list (core_type * core_type) :=
-  map erase_norm_type_pair Ts.
-
-Definition erase_norm_type_list
-    (Ts : list norm_type)
-  : list core_type :=
-  map erase_norm_type Ts.
-
-Definition erase_normal_map_entries
-    (entries :
-       list (norm_type * norm_type))
-  : list (core_type * core_type) :=
-  map
-    (fun entry =>
-       let '(K, V) := entry in
-       (erase_norm_type K,
-        erase_norm_type V))
-    entries.
 
 Fixpoint normalize_core_type_list_aux
     (f : core_type -> result norm_type)
@@ -486,16 +482,6 @@ Fixpoint find_duplicate_map_key
 Fixpoint validate_map_pattern_keys
     (T : norm_type)
   : result unit :=
-  let fix validate_type_list
-      (Ts : list norm_type)
-    : result unit :=
-    match Ts with
-    | [] => Ok tt
-    | T1 :: rest =>
-        _ <- validate_map_pattern_keys T1 ;;
-        validate_type_list rest
-    end
-  in
   let fix validate_entries
       (seen_keys : list norm_type)
       (entries : list (norm_type * norm_type))
@@ -528,19 +514,9 @@ Fixpoint validate_map_pattern_keys
   | NT_Prod T1 T2 rest =>
       _ <- validate_map_pattern_keys T1 ;;
       _ <- validate_map_pattern_keys T2 ;;
-      validate_type_list rest
-  | NT_Comb _ args => validate_type_list args
+      validate_list validate_map_pattern_keys rest
+  | NT_Comb _ args => validate_list validate_map_pattern_keys args
   | NT_Map entries => validate_entries [] entries
-  end.
-
-Fixpoint validate_map_pattern_keys_list
-    (Ts : list norm_type)
-  : result unit :=
-  match Ts with
-  | [] => Ok tt
-  | T :: rest =>
-      _ <- validate_map_pattern_keys T ;;
-      validate_map_pattern_keys_list rest
   end.
 
 Definition type_subst : Type := list (string * norm_type).
@@ -993,7 +969,7 @@ Definition infer_type_app
       infer_comb_prim_app f Gamma ctor arglst prm
   | _, NT_Unit, _, NT_Prim _ => Err (TypeErr_InvalidApp aty bty)
   | _, NT_Prod x _ _, _, NT_Prim Prm_Left => Ok x
-  | _, NT_Prod _ _ xs, _, NT_Prim Prm_Right => Ok (last xs NT_Unit)
+  | _, NT_Prod _ x2 xs, _, NT_Prim Prm_Right => Ok (last xs x2)
   | _, _, _, _ => Err (TypeErr_InvalidApp aty bty)
   end.
 
@@ -1312,7 +1288,7 @@ Definition exec_core_command
                         Err (TypeErr_UsePrimInDeclCombParam nrmargs)
                       else
                         _ <- validate_hole_declaration holenames nrmargs ;;
-                        _ <- validate_map_pattern_keys_list nrmargs ;;
+                        _ <- validate_list validate_map_pattern_keys nrmargs ;;
                         Ok
                           {| ms_type_ctx :=
                                BindCombType tn nrmctortype holenames nrmargs
@@ -1415,17 +1391,6 @@ Fixpoint elaborate_type
     (T : source_type)
     {struct T}
   : result core_type :=
-  let fix elaborate_types
-      (Ts : list source_type)
-      : result (list core_type) :=
-      match Ts with
-      | [] => Ok []
-      | T1 :: rest =>
-          T1' <- elaborate_type Delta Theta T1 ;;
-          rest' <- elaborate_types rest ;;
-          Ok (T1' :: rest')
-      end
-  in
   let fix elaborate_entries
       (entries : list (source_type * source_type))
       : result (list (core_type * core_type)) :=
@@ -1452,12 +1417,12 @@ Fixpoint elaborate_type
       T1' <- elaborate_type Delta Theta T1 ;;
       Ok (CT_TRep T1')
   | ST_Prod Ts =>
-      Ts' <- elaborate_types Ts ;;
+      Ts' <- map_result (elaborate_type Delta Theta) Ts ;;
       Ok (CT_Prod Ts')
   | ST_Comb tn Ts =>
     match lookup_type_name_kind Theta tn with
     | Some TNK_Comb =>
-        Ts' <- elaborate_types Ts ;;
+        Ts' <- map_result (elaborate_type Delta Theta) Ts ;;
         Ok (CT_Comb tn Ts')
     | Some TNK_Abbr =>
         Err (TypeErr_ExpectedCombType tn)
@@ -1467,19 +1432,6 @@ Fixpoint elaborate_type
   | ST_Map entries =>
       entries' <- elaborate_entries entries ;;
       Ok (CT_Map entries')
-  end.
-
-Fixpoint elaborate_type_list
-    (Delta : type_def_context)
-    (Theta : type_name_context)
-    (Ts : list source_type)
-  : result (list core_type) :=
-  match Ts with
-  | [] => Ok []
-  | T :: rest =>
-      T' <- elaborate_type Delta Theta T ;;
-      rest' <- elaborate_type_list Delta Theta rest ;;
-      Ok (T' :: rest')
   end.
 
 Fixpoint elaborate_expr
@@ -1581,7 +1533,7 @@ Definition elaborate_command
         | Some TNK_Abbr => Err (TypeErr_DuplicateType tn)
         end ;;
       ctor' <- elaborate_type Delta Theta' ctor ;;
-      args' <- elaborate_type_list Delta Theta' args ;;
+      args' <- map_result (elaborate_type Delta Theta') args ;;
       Ok
         {| ec_elaboration_state :=
              {| es_expr_defs := Sigma;

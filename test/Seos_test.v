@@ -176,6 +176,22 @@ Proof.
   reflexivity.
 Qed.
 
+Example infer_binary_prod_right :
+  infer_type_core_expr []
+    (CE_App
+      (CE_Prod [CE_Elem "a"; CE_Elem "b"])
+      (CE_Prim Prm_Right))
+  = Ok (NT_Elem "b").
+Proof. reflexivity. Qed.
+
+Example eval_binary_prod_right :
+  eval_core_expr
+    (CE_App
+      (CE_Prod [CE_Elem "a"; CE_Elem "b"])
+      (CE_Prim Prm_Right))
+  = Ok (V_Elem "b").
+Proof. reflexivity. Qed.
+
 Example invalid_prod_with_one_member : 
   run_prog [
     SC_Eval (SE_Prod [SE_Elem ""])
