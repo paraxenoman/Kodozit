@@ -144,25 +144,47 @@ Example example_bad_prog7 := [
 Compute (run_prog example_bad_prog7).
 
 (* Плохая программа - ошибочное применение Prm_Left *)
-Example example_good_prog8 := [
-  SC_DeclVar "myvar" (SE_Prod []);
-  SC_Eval (SE_App (SE_Var "myvar") (SE_Prim Prm_Left))].
-Compute (run_prog example_good_prog8).
+Example example_good_prog8 : run_prog [
+    SC_DeclVar "myvar" (SE_Prod []);
+    SC_Eval (SE_App (SE_Var "myvar") (SE_Prim Prm_Left))
+  ]
+  = Err (TypeErr_InvalidApp NT_Unit (NT_Prim Prm_Left)).
+Proof.
+  reflexivity.
+Qed.
 
 (* Плохая программа - закрытие несуществующего типа *)
-Example example_good_prog9 := [
+Example example_good_prog9 : run_prog [
   SC_CloseCombType "Bool"
-].
-Compute (run_prog example_good_prog9).
+] 
+= Err (TypeErr_CloseUnknownComb "Bool").
+Proof.
+  reflexivity.
+Qed.
 
 (* Плохая программа - повторное закрытие типа *)
-Example example_good_prog10 := [
-  SC_DeclCombVariant "Bool" (ST_Elem "true") [] [];
-  SC_DeclCombVariant "Bool" (ST_Elem "false") [] [];
-  SC_CloseCombType "Bool";
-  SC_CloseCombType "Bool"
-].
-Compute (run_prog example_good_prog10).
+Example example_good_prog10 : 
+  run_prog [
+    SC_DeclCombVariant "Bool" (ST_Elem "true") [] [];
+    SC_DeclCombVariant "Bool" (ST_Elem "false") [] [];
+    SC_CloseCombType "Bool";
+    SC_CloseCombType "Bool"
+  ]
+  = 
+  Err (TypeErr_CombAlreadyClosed "Bool").
+Proof.
+  reflexivity.
+Qed.
+
+Example invalid_prod_with_one_member : 
+  run_prog [
+    SC_Eval (SE_Prod [SE_Elem ""])
+  ] 
+  =
+  Err (ExprErr_InvalidProd (CE_Prod [CE_Elem ""])).
+Proof.
+  reflexivity.
+Qed.
 
 Example norm_type_beq_unit :
   norm_type_beq NT_Unit NT_Unit = true.
