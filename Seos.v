@@ -161,6 +161,7 @@ Definition source_prog : Type :=
   list source_command.
 
 Inductive error : Type :=
+  | InternalErr_UnificationFuelExhausted : error
   | Err_UnboundVar : VarName -> error
   | Err_UnboundTypeAbbr : TypeName -> error
   | Err_UnboundHole : string -> error
@@ -178,7 +179,6 @@ Inductive error : Type :=
   | TypeErr_UnknownCombSignature : error
   | TypeErr_UnknownCombType : TypeName -> error
   | TypeErr_ExpectedCombType : TypeName -> error
-  | TypeErr_InvalidType : error
   | TypeErr_InvalidProd : core_type -> error
   | TypeErr_Mismatch : norm_type -> norm_type -> error
   | TypeErr_CombClosed : TypeName -> error
@@ -748,7 +748,7 @@ Fixpoint unify_norm_type_fuel
       end
   in
   match fuel with
-  | 0 => Err TypeErr_InvalidType
+  | 0 => Err InternalErr_UnificationFuelExhausted
   | S fuel' =>
     if norm_type_contains_hole actual then
       Err (TypeErr_UseHole actual)
