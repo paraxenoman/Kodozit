@@ -959,18 +959,17 @@ Definition infer_comb_prim_app
   end.
 
 Definition infer_type_app
-    (f : type_context -> core_expr -> result norm_type)
-    (Gamma : type_context)
-    (a b : core_expr)
     (aty bty : norm_type)
   : result norm_type :=
-  match a, aty, b, bty with
-  | CE_Comb ctor arglst, _, (CE_Prim prm), _ =>
-      infer_comb_prim_app f Gamma ctor arglst prm
-  | _, NT_Unit, _, NT_Prim _ => Err (TypeErr_InvalidApp aty bty)
-  | _, NT_Prod x _ _, _, NT_Prim Prm_Left => Ok x
-  | _, NT_Prod _ x2 xs, _, NT_Prim Prm_Right => Ok (last xs x2)
-  | _, _, _, _ => Err (TypeErr_InvalidApp aty bty)
+  match aty, bty with
+  | NT_Unit, NT_Prim _ =>
+      Err (TypeErr_InvalidApp aty bty)
+  | NT_Prod x _ _, NT_Prim Prm_Left =>
+      Ok x
+  | NT_Prod _ x2 xs, NT_Prim Prm_Right =>
+      Ok (last xs x2)
+  | _, _ =>
+      Err (TypeErr_InvalidApp aty bty)
   end.
 
 Fixpoint value_key_mem
@@ -1052,9 +1051,19 @@ Fixpoint infer_type_core_expr
       entry_types <- infer_map_entries [] entries ;;
       Ok (NT_Map entry_types)
   | CE_App a b =>
-      ta <- infer_type_core_expr Gamma a ;;
-      tb <- infer_type_core_expr Gamma b ;;
-       infer_type_app infer_type_core_expr Gamma a b ta tb
+      match a, b with
+      | CE_Comb ctor arglst, CE_Prim prm =>
+          infer_comb_prim_app
+            infer_type_core_expr
+            Gamma
+            ctor
+            arglst
+            prm
+      | _, _ =>
+          ta <- infer_type_core_expr Gamma a ;;
+          tb <- infer_type_core_expr Gamma b ;;
+          infer_type_app ta tb
+      end
   end. 
 
 Fixpoint eval_core_expr
