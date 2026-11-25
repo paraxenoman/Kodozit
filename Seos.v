@@ -528,52 +528,6 @@ Fixpoint type_hole_lookup (subst : type_subst) (X : string) : option norm_type :
       if eqb X Y then Some T else type_hole_lookup rest X
   end.
 
-Fixpoint apply_type_subst
-    (subst : type_subst)
-    (T : norm_type)
-  : norm_type :=
-  let fix apply_type_subst_list
-      (Ts : list norm_type)
-    : list norm_type :=
-    match Ts with
-    | [] => []
-    | T1 :: rest =>
-        apply_type_subst subst T1 ::
-        apply_type_subst_list rest
-    end
-  in
-  let fix apply_type_subst_entries
-      (entries : list (norm_type * norm_type))
-    : list (norm_type * norm_type) :=
-    match entries with
-    | [] => []
-    | (K, V) :: rest =>
-        (apply_type_subst subst K,
-         apply_type_subst subst V) ::
-        apply_type_subst_entries rest
-    end
-  in
-  match T with
-  | NT_Hole X =>
-      match type_hole_lookup subst X with
-      | Some T' => T'
-      | None => NT_Hole X
-      end
-  | NT_Elem e => NT_Elem e
-  | NT_Prim p => NT_Prim p
-  | NT_TRep T1 => NT_TRep (apply_type_subst subst T1)
-  | NT_Unit => NT_Unit
-  | NT_Prod T1 T2 rest =>
-      NT_Prod
-        (apply_type_subst subst T1)
-        (apply_type_subst subst T2)
-        (apply_type_subst_list rest)
-  | NT_Comb tn args =>
-      NT_Comb tn (apply_type_subst_list args)
-  | NT_Map entries =>
-      NT_Map (apply_type_subst_entries entries)
-  end.
-
 Fixpoint eval_core_expr_list (f : core_expr -> result value) (ts : list core_expr)
   : result (list value) :=
   match ts with
