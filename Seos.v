@@ -1,5 +1,6 @@
 (* Kodozit.Seos Formal Theory @ Paraxenoman *)
 
+Require Import Kodozit.Utils.
 Require Import Stdlib.Strings.String.
 Require Import Stdlib.Lists.List.
 Require Import ExtLib.Structures.Monad.
@@ -9,16 +10,6 @@ Open Scope list_scope.
 Open Scope string_scope.
 Open Scope bool_scope.
 Open Scope monad_scope.
-
-Set Implicit Arguments.
-Set Strict Implicit.
-
-Fixpoint list_eqb {A : Type} (feq : A -> A -> bool) (l1 l2 : list A) : bool :=
-  match l1, l2 with
-  | [], [] => true
-  | x1 :: t1, x2 :: t2 => feq x1 x2 && list_eqb feq t1 t2
-  | _, _ => false
-  end.
 
 Definition TypeName : Type := string.
 Definition VarName : Type := string.
@@ -33,16 +24,6 @@ Definition prim_beq (p1 p2 : prim) : bool :=
   | Prm_Left, Prm_Left => true
   | Prm_Right, Prm_Right => true
   | _, _ => false
-  end.
-
-Definition pair_eqb
-    {A B : Type}
-    (eqA : A -> A -> bool)
-    (eqB : B -> B -> bool)
-    (p1 p2 : A * B)
-  : bool :=
-  match p1, p2 with
-  | (a1, b1), (a2, b2) => eqA a1 a2 && eqB b1 b2
   end.
 
 Inductive core_type : Type :=
@@ -319,42 +300,6 @@ with normalize_core_type_list
     : result (list norm_type) :=
     normalize_core_type_list_aux normalize_core_type types.
 
-Fixpoint remove_first_eqb
-    {A : Type}
-    (feq : A -> A -> bool)
-    (x : A)
-    (xs : list A)
-  : option (list A) :=
-  match xs with
-  | [] => None
-  | y :: ys =>
-      if feq x y then
-        Some ys
-      else
-        match remove_first_eqb feq x ys with
-        | None => None
-        | Some ys' => Some (y :: ys')
-        end
-  end.
-
-Fixpoint permutation_eqb
-    {A : Type}
-    (feq : A -> A -> bool)
-    (xs ys : list A)
-  : bool :=
-  match xs with
-  | [] =>
-      match ys with
-      | [] => true
-      | _ => false
-      end
-  | x :: xs' =>
-      match remove_first_eqb feq x ys with
-      | None => false
-      | Some ys' => permutation_eqb feq xs' ys'
-      end
-  end.
-
 Fixpoint norm_type_beq
     (T1 T2 : norm_type)
   : bool :=
@@ -381,7 +326,7 @@ Fixpoint norm_type_beq
   | _, _ =>
       false
   end.
- 
+
 Definition norm_type_mem
     (T : norm_type)
     (Ts : list norm_type)
